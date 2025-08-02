@@ -1,7 +1,9 @@
 all:
 	make -C kernel-module-src
 
-clean:
+clean: kernel-module-src-clean
+
+kernel-module-src-clean:
 	make -C kernel-module-src clean
 
 module-mount:
