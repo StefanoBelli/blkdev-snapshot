@@ -1,7 +1,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/cred.h>
-#include <linux/printk.h>
 #include <activation.h>
 
 static int activate_snapshot(const char* dev_name, const char* passwd) {
