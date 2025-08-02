@@ -22,7 +22,8 @@ clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) clean
 
 mount:
-	insmod $(modname).ko
+	@echo **insmod cmdline not shown to prevent password from being revealed**
+	@insmod $(modname).ko actpasswd=$(PASSWD)
 
 umount:
 	rmmod $(modname)
