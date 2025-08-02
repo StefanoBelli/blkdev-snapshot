@@ -94,7 +94,7 @@ static const struct kobj_attribute deactivate_kobj_attribute = (struct kobj_attr
     }
 };
 
-int allow_activation_mechanism_via_sysfs(void) {
+int setup_activation_mechanism_via_sysfs(void) {
     struct kobject *this_module_kobj = &THIS_MODULE->mkobj.kobj;
 
     if(sysfs_create_file(this_module_kobj, &activate_kobj_attribute.attr) != 0) {

@@ -11,7 +11,7 @@ void __exit exit_blkdev_snapshot_module(void);
 
 
 int __init init_blkdev_snapshot_module(void) {
-    return allow_activation_mechanism_via_sysfs();
+    return setup_activation_mechanism_via_sysfs();
 }
 
 void __exit exit_blkdev_snapshot_module(void) {

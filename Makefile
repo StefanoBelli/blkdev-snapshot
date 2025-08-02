@@ -1,11 +1,11 @@
 all:
-	make -C src
+	make -C kernel-module-src
 
 clean:
-	make -C src clean
+	make -C kernel-module-src clean
 
 module-mount:
-	make -C src mount
+	make -C kernel-module-src mount
 
 module-umount:
-	make -C src umount
+	make -C kernel-module-src umount
