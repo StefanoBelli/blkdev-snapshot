@@ -1,11 +1,13 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/cred.h>
-#include <crypto/hash.h>
-#include <activation.h>
 
-static struct crypto_shash *sha256_shash = NULL;
-static char *auth_passwd;
+#ifndef CONFIG_SYSFS
+#include <linux/fs.h>
+#endif
+
+#include <passwd.h>
+#include <activation.h>
 
 static int auth_check(const char* passwd);
 
@@ -30,38 +32,7 @@ static int deactivate_snapshot(const char* dev_name, const char* passwd) {
     return 0;
 }
 
-/* compute sha256 */
-
-static int hash_sha256(const char* data, size_t datalen, char* output) {
-    struct shash_desc *desc;
-
-    size_t size = sizeof(struct shash_desc) + crypto_shash_descsize(sha256_shash);
-    desc = kmalloc(size, GFP_KERNEL);
-    if (desc == NULL) {
-        return -ENOMEM;
-    }
-    
-    desc->tfm = sha256_shash;
-
-    return crypto_shash_digest(desc, data, datalen, output);
-}
-/* password cmp */
-
-static int password_cmp(const char* passwd) {
-    if(sha256_shash != NULL) {
-        char hashed_passwd[32];
-        int rv = hash_sha256(passwd, strlen(passwd), hashed_passwd);
-        if(rv != 0) {
-            pr_err("hash_sha256 has failed: %d\n", rv);
-            return rv;
-        }
-        return memcmp(hashed_passwd, auth_passwd, 32);
-    } else {
-        return strcmp(passwd, auth_passwd);
-    }
-}
-
-/* auth check */
+/* ---- */
 
 static int auth_check(const char* passwd) {
     const struct cred* task_cred = current->cred;
@@ -76,10 +47,7 @@ static int auth_check(const char* passwd) {
     return 0;
 }
 
-
-/* sysfs-related things below... */
-
-static inline int parse_call_args(const char* data, size_t datalen, const char** lhs, const char** rhs) {
+static inline int parse_call_args(char* data, size_t datalen, const char** lhs, const char** rhs) {
     if(data[datalen - 1] != 0) {
         return -EINVAL;
     }
@@ -91,7 +59,12 @@ static inline int parse_call_args(const char* data, size_t datalen, const char**
 
     *separator = 0;
 
-    *lhs = data;
+    char* first_nowschr = strim(data);
+    if(*first_nowschr == 0) {
+        return -EINVAL;
+    }
+
+    *lhs = first_nowschr;
     *rhs = separator + 1;
 
     return 0; 
@@ -99,7 +72,7 @@ static inline int parse_call_args(const char* data, size_t datalen, const char**
 
 typedef int(*wrapped_call_fnt)(const char*, const char*);
 
-static int call_wrapper(const char* data, size_t datalen, wrapped_call_fnt callback) {
+static int call_wrapper(char* data, size_t datalen, wrapped_call_fnt callback) {
     const char *devn;
     const char *pwd;
 
@@ -115,12 +88,29 @@ static int call_wrapper(const char* data, size_t datalen, wrapped_call_fnt callb
     return datalen;   
 }
 
+#ifdef CONFIG_SYSFS
+
+static ssize_t __sysfs_call_wrapper(const char* data, size_t datalen, wrapped_call_fnt fn) {
+    char* buf = kmalloc(sizeof(char) * datalen, GFP_KERNEL);
+    if(buf == NULL) {
+        return -ENOMEM;
+    }
+
+    memcpy(buf, data, sizeof(char) * datalen);
+
+    ssize_t rv = call_wrapper(buf, datalen, fn);
+
+    kfree(buf);
+
+    return rv;
+}
+
 static ssize_t activate_snapshot_sysfs_store(
         __always_unused struct kobject*, 
         __always_unused struct kobj_attribute*, 
         const char* data, size_t datalen) {
 
-    return call_wrapper(data, datalen, activate_snapshot);
+    return __sysfs_call_wrapper(data, datalen, activate_snapshot);
 }
 
 static ssize_t deactivate_snapshot_sysfs_store(
@@ -128,20 +118,18 @@ static ssize_t deactivate_snapshot_sysfs_store(
         __always_unused struct kobj_attribute*, 
         const char* data, size_t datalen) {
 
-    return call_wrapper(data, datalen, deactivate_snapshot);
+    return __sysfs_call_wrapper(data, datalen, deactivate_snapshot);
 }
 
 static const struct kobj_attribute activate_kobj_attribute = (struct kobj_attribute) {
-    .show = NULL,
     .store = activate_snapshot_sysfs_store,
     .attr = (struct attribute) {
         .mode = S_IWUSR | S_IWGRP | S_IWOTH,
-        .name = "activate_snapshot"
+        .name = "activate_snapshot",
     }
 };
 
 static const struct kobj_attribute deactivate_kobj_attribute = (struct kobj_attribute) {
-    .show = NULL,
     .store = deactivate_snapshot_sysfs_store,
     .attr = (struct attribute) {
         .mode = S_IWUSR | S_IWGRP | S_IWOTH,
@@ -149,56 +137,99 @@ static const struct kobj_attribute deactivate_kobj_attribute = (struct kobj_attr
     }
 };
 
-extern char* activation_ct_passwd;
+#else
 
-int setup_activation_mechanism_via_sysfs(void) {
+#define ACTIVATION_CHRDEV_NAME "blkdev-snapshot-activation"
+#define ACTIVATE_CHRDEV_IOCTL_CMD 0
+#define DEACTIVATE_CHRDEV_IOCTL_CMD 1
+
+struct activation_ioctl_args {
+    const char* data;
+    size_t datalen;
+};
+
+static long activation_chrdev_ioctl(struct file* f, unsigned int cmd, unsigned long arg) {
+    if(cmd != ACTIVATE_CHRDEV_IOCTL_CMD && cmd != DEACTIVATE_CHRDEV_IOCTL_CMD) {
+        return -EINVAL;
+    }
+
+    struct activation_ioctl_args * __user user_args = 
+        (struct activation_ioctl_args* __user) arg;
+
+    char *buf = kmalloc(sizeof(char) * user_args->datalen, GFP_KERNEL);
+    if(buf == NULL) {
+        return -ENOMEM;
+    }
+
+    if(copy_from_user(buf, user_args->data, user_args->datalen) != 0) {
+        kfree(buf);
+        return -1;
+    }
+
+    wrapped_call_fnt fun = 
+        cmd == ACTIVATE_CHRDEV_IOCTL_CMD ? 
+        activate_snapshot : 
+        deactivate_snapshot;
+
+    int rv = call_wrapper(buf, user_args->datalen, fun);
+
+    kfree(buf);
+
+    return rv;
+}
+
+static int activation_chrdev_maj;
+static const struct file_operations activation_chrdev_fops = {
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = activation_chrdev_ioctl
+};
+
+extern unsigned int activation_dev_req_maj;
+
+#endif
+
+int setup_activation_mechanism(void) {
+    int rv = setup_passwd();
+    if(rv != 0) {
+        return rv;
+    }
+
+#ifdef CONFIG_SYSFS
     struct kobject *this_module_kobj = &THIS_MODULE->mkobj.kobj;
 
     if(sysfs_create_file(this_module_kobj, &activate_kobj_attribute.attr) != 0) {
-        return -1;
+        return -ENOENT;
     }
 
     if(sysfs_create_file(this_module_kobj, &deactivate_kobj_attribute.attr) != 0) {
         sysfs_remove_file(this_module_kobj, &activate_kobj_attribute.attr);
-        return -1;
+        return -ENOENT;
     }
-    
-    sha256_shash = crypto_alloc_shash("sha256", 0, 0);
-    if (!IS_ERR(sha256_shash)) {
-        auth_passwd = kmalloc(32, GFP_KERNEL);
-        if(auth_passwd == NULL) {
-            crypto_free_shash(sha256_shash);
-            return -ENOMEM;
-        }
+#else
+    activation_chrdev_maj = register_chrdev(activation_dev_req_maj, 
+        ACTIVATION_CHRDEV_NAME, &activation_chrdev_fops);
 
-        if(hash_sha256(activation_ct_passwd, strlen(activation_ct_passwd), auth_passwd) != 0) {
-            crypto_free_shash(sha256_shash);
-            kfree(auth_passwd);
-            return -1;
-        }
-    } else {
-        pr_warn("unable to allocate sha256 shash: %ld\n", PTR_ERR(sha256_shash));
-        auth_passwd = kmalloc(strlen(activation_ct_passwd), GFP_KERNEL);
-        if(auth_passwd == NULL) {
-            return -ENOMEM;
-        }
-        memcpy(auth_passwd, activation_ct_passwd, strlen(activation_ct_passwd));
+    if(activation_chrdev_maj < 0) {
+        return -ENODEV;
+    } else if(activation_dev_req_maj== 0) {
+        pr_info("activation device for blkdev snapshot got major number: %d\n", 
+            activation_chrdev_maj);
     }
-
-    memset(activation_ct_passwd, 0, strlen(activation_ct_passwd));
+#endif
 
     return 0;
 }
 
-void destroy_activation_mechanism_via_sysfs(void) {
-    kfree(auth_passwd);
+void destroy_activation_mechanism(void) {
 
-    if (sha256_shash != NULL) {
-        crypto_free_shash(sha256_shash); 
-    }
-
+#ifdef CONFIG_SYSFS
     struct kobject *this_module_kobj = &THIS_MODULE->mkobj.kobj;
 
     sysfs_remove_file(this_module_kobj, &activate_kobj_attribute.attr);
     sysfs_remove_file(this_module_kobj, &deactivate_kobj_attribute.attr);
+#else
+    unregister_chrdev(activation_chrdev_maj, ACTIVATION_CHRDEV_NAME);
+#endif
+
+    destroy_passwd();
 }

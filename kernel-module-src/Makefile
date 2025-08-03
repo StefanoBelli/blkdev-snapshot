@@ -1,7 +1,7 @@
 SHELL=/bin/bash
 modname=blkdev-snapshot
 obj-m := $(modname).o
-$(modname)-objs += main.o activation.o
+$(modname)-objs += main.o activation.o passwd.o
 ccflags-y += -Wall -W -Wextra -Wshadow -Wno-unused-parameter -O2 -I$(src)/include
 
 all:
@@ -23,6 +23,8 @@ clean:
 
 mount:
 	@echo **insmod cmdline not shown to prevent password from being revealed**
+	@echo **however, note that PASSWD=*** has been passed to make***
+	@echo **take care of your bash_history for example**
 	@insmod $(modname).ko actpasswd=$(PASSWD)
 
 umount:
