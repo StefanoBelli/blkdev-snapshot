@@ -87,6 +87,8 @@ void destroy_passwd(void) {
 
 int setup_passwd(void) {
 
+    size_t actpasswdlen = strlen(activation_ct_passwd);
+
 #ifdef CONFIG_SYSFS
     sha256_shash = crypto_alloc_shash("sha256", 0, 0);
     if (!IS_ERR(sha256_shash)) {
@@ -100,7 +102,7 @@ int setup_passwd(void) {
         while(get_random_bytes_wait(auth_passwd_salt, 32) == -ERESTARTSYS)
             ;
 
-        int rv = hash_sha256(activation_ct_passwd, strlen(activation_ct_passwd), auth_passwd);
+        int rv = hash_sha256(activation_ct_passwd, actpasswdlen, auth_passwd);
         if(rv < 0) {
             pr_err("%s: hash_sha256(...) failed, errno=%d\n",
                    module_name(THIS_MODULE), rv);
@@ -112,17 +114,17 @@ int setup_passwd(void) {
 
         sha256_shash = NULL;
 #endif
-        auth_passwd = kmalloc(strlen(activation_ct_passwd) * sizeof(char), GFP_KERNEL);
+        auth_passwd = kmalloc((actpasswdlen + 1) * sizeof(char), GFP_KERNEL);
         if(auth_passwd == NULL) {
             return -ENOMEM;
-        } 
+        }
 
-        memcpy(auth_passwd, activation_ct_passwd, strlen(activation_ct_passwd) * sizeof(char));
-
+        memcpy(auth_passwd, activation_ct_passwd, actpasswdlen * sizeof(char));
+        auth_passwd[actpasswdlen] = 0;
 #ifdef CONFIG_SYSFS
     }
 
-    memset(activation_ct_passwd, 0, strlen(activation_ct_passwd) * sizeof(char));
+    memset(activation_ct_passwd, 0, actpasswdlen * sizeof(char));
 #endif
 
     return 0;

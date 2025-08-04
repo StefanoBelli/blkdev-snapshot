@@ -44,6 +44,7 @@ int __init init_blkdev_snapshot_module(void) {
 }
 
 void __exit exit_blkdev_snapshot_module(void) {
+    kfree(activation_ct_passwd);
     destroy_activation_mechanism();
 }
 
