@@ -36,7 +36,7 @@ void __exit exit_blkdev_snapshot_module(void);
 
 int __init init_blkdev_snapshot_module(void) {
     if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
-        pr_err("no password was provided\n");
+        pr_err("%s: no password was provided\n", module_name(THIS_MODULE));
         return -ENODATA;
     }
 

@@ -33,7 +33,7 @@ static int hash_sha256(const char* data, size_t datalen, char* output) {
     char* data_with_salt = kmalloc(datasize + saltsize, GFP_KERNEL);
     if(data_with_salt == NULL) {
         kfree(desc);
-        return -ENOENT;
+        return -ENOMEM;
     }
 
     memcpy(data_with_salt, data, datasize);
@@ -55,8 +55,9 @@ int password_cmp(const char* passwd) {
     if(sha256_shash != NULL) {
         char hashed_passwd[32];
         int rv = hash_sha256(passwd, strlen(passwd), hashed_passwd);
-        if(rv != 0) {
-            pr_err("hash_sha256 has failed: %d\n", rv);
+        if(rv < 0) {
+            pr_err("%s: hash_sha256(...) failed, errno=%d\n", 
+                module_name(THIS_MODULE), rv);
             return rv;
         }
 
@@ -99,11 +100,16 @@ int setup_passwd(void) {
         while(get_random_bytes_wait(auth_passwd_salt, 32) == -ERESTARTSYS)
             ;
 
-        if(hash_sha256(activation_ct_passwd, strlen(activation_ct_passwd), auth_passwd) != 0) {
-            return -1;
+        int rv = hash_sha256(activation_ct_passwd, strlen(activation_ct_passwd), auth_passwd);
+        if(rv < 0) {
+            pr_err("%s: hash_sha256(...) failed, errno=%d\n",
+                   module_name(THIS_MODULE), rv);
+            return rv;
         }
     } else {
-        pr_warn("unable to allocate sha256_shash: %ld\n", PTR_ERR(sha256_shash));
+        pr_warn("%s: fallback to ct passwd - crypto_alloc_shash(...) failed, errno=%ld\n", 
+            module_name(THIS_MODULE), PTR_ERR(sha256_shash));
+
         sha256_shash = NULL;
 #endif
         auth_passwd = kmalloc(strlen(activation_ct_passwd) * sizeof(char), GFP_KERNEL);

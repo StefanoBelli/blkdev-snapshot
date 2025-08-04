@@ -163,7 +163,7 @@ static long activation_chrdev_ioctl(struct file* f, unsigned int cmd, unsigned l
 
     if(copy_from_user(buf, user_args->data, user_args->datalen) != 0) {
         kfree(buf);
-        return -1;
+        return -EFAULT;
     }
 
     wrapped_call_fnt fun = 
@@ -197,23 +197,29 @@ int setup_activation_mechanism(void) {
 #ifdef CONFIG_SYSFS
     struct kobject *this_module_kobj = &THIS_MODULE->mkobj.kobj;
 
-    if(sysfs_create_file(this_module_kobj, &activate_kobj_attribute.attr) != 0) {
-        return -ENOENT;
+    if((rv = sysfs_create_file(this_module_kobj, &activate_kobj_attribute.attr)) != 0) {
+        pr_err("%s: sysfs_create_file(activate_snapshot) failed, errno=%d\n", 
+            module_name(THIS_MODULE), rv);
+        return rv;
     }
 
-    if(sysfs_create_file(this_module_kobj, &deactivate_kobj_attribute.attr) != 0) {
+    if((rv = sysfs_create_file(this_module_kobj, &deactivate_kobj_attribute.attr)) != 0) {
         sysfs_remove_file(this_module_kobj, &activate_kobj_attribute.attr);
-        return -ENOENT;
+        pr_err("%s: sysfs_create_file(deactivate_snapshot) failed, errno=%d\n", 
+            module_name(THIS_MODULE), rv);
+        return rv;
     }
 #else
     activation_chrdev_maj = register_chrdev(activation_dev_req_maj, 
         ACTIVATION_CHRDEV_NAME, &activation_chrdev_fops);
 
     if(activation_chrdev_maj < 0) {
-        return -ENODEV;
+        pr_err("%s: register_chrdev(...) failed, errno=%d\n", 
+            module_name(THIS_MODULE), activation_chrdev_maj);
+        return activation_chrdev_maj;
     } else if(activation_dev_req_maj== 0) {
-        pr_info("activation device for blkdev snapshot got major number: %d\n", 
-            activation_chrdev_maj);
+        pr_info("%s: activation device for blkdev snapshot got major number: %d\n", 
+            module_name(THIS_MODULE), activation_chrdev_maj);
     }
 #endif
 
