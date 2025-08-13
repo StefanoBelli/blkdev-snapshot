@@ -7,15 +7,10 @@
 //https://www.kernel.org/doc/html/v5.0/crypto/api-digest.html#synchronous-message-digest-api    
 //https://www.kernel.org/doc/html/v4.14/crypto/api-samples.html#code-example-for-use-of-operational-state-memory-with-shash
 
-#ifdef CONFIG_SYSFS
 static char auth_passwd_salt[32];
 static struct crypto_shash *sha256_shash;
-#endif
-
 static char *auth_passwd;
 extern char* activation_ct_passwd;
-
-#ifdef CONFIG_SYSFS
 
 static int hash_sha256(const char* data, size_t datalen, char* output) {
     size_t size = sizeof(struct shash_desc) + crypto_shash_descsize(sha256_shash);
@@ -47,11 +42,7 @@ static int hash_sha256(const char* data, size_t datalen, char* output) {
     return rv;
 }
 
-#endif
-
 int password_cmp(const char* passwd) {
-
-#ifdef CONFIG_SYSFS
     if(sha256_shash != NULL) {
         char hashed_passwd[32];
         int rv = hash_sha256(passwd, strlen(passwd), hashed_passwd);
@@ -63,12 +54,8 @@ int password_cmp(const char* passwd) {
 
         return memcmp(hashed_passwd, auth_passwd, 32);
     } else {
-#endif
         return strcmp(passwd, auth_passwd);
-
-#ifdef CONFIG_SYSFS
     }
-#endif
 }
 
 void destroy_passwd(void) {
@@ -77,19 +64,23 @@ void destroy_passwd(void) {
         auth_passwd = NULL;
     }
 
-#ifdef CONFIG_SYSFS
     if (sha256_shash != NULL) {
         crypto_free_shash(sha256_shash);
         sha256_shash = NULL;
     }
-#endif
 }
 
-int setup_passwd(void) {
+#ifndef CONFIG_SYSFS
+#define write_cr0_forced(v) \
+    do { \
+        unsigned long val = (unsigned long) (v); \
+        asm volatile("mov %0, %%cr0" : "+r"((val)) :: "memory"); \
+    } while(0)
+#endif
 
+int setup_passwd(void) {
     size_t actpasswdlen = strlen(activation_ct_passwd);
 
-#ifdef CONFIG_SYSFS
     sha256_shash = crypto_alloc_shash("sha256", 0, 0);
     if (!IS_ERR(sha256_shash)) {
         auth_passwd = kmalloc(32 * sizeof(char), GFP_KERNEL);
@@ -113,7 +104,6 @@ int setup_passwd(void) {
             module_name(THIS_MODULE), PTR_ERR(sha256_shash));
 
         sha256_shash = NULL;
-#endif
         auth_passwd = kmalloc((actpasswdlen + 1) * sizeof(char), GFP_KERNEL);
         if(auth_passwd == NULL) {
             return -ENOMEM;
@@ -121,11 +111,24 @@ int setup_passwd(void) {
 
         memcpy(auth_passwd, activation_ct_passwd, actpasswdlen * sizeof(char));
         auth_passwd[actpasswdlen] = 0;
-#ifdef CONFIG_SYSFS
     }
 
+#ifndef CONFIG_SYSFS
+    preempt_disable();
+    unsigned long cr0 = read_cr0();
+    write_cr0_forced(cr0 & ~X86_CR0_WP);
+#endif
+
     memset(activation_ct_passwd, 0, actpasswdlen * sizeof(char));
+
+#ifndef CONFIG_SYSFS
+    write_cr0_forced(cr0);
+    preempt_enable();
 #endif
 
     return 0;
 }
+
+#ifndef CONFIG_SYSFS
+#undef write_cr0_forced
+#endif

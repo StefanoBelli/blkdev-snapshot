@@ -16,9 +16,8 @@ module_param_named(actpasswd, activation_ct_passwd, charp, 0);
 #error you must set a password (define ACTPASSWD)
 #endif
 
-#warning password is cleartext-hardcoded in ko, \
-cannot salt-hash in memory! \
-you may want to find a way to secure your .ko file \
+#warning password is cleartext-hardcoded in ko! \
+You may want to find a way to secure your .ko file \
 such that it is not possible to do any kind of analysis \
 on it (e.g. objdump)
 
