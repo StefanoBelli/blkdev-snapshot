@@ -90,6 +90,10 @@ int setup_passwd(void) {
 
         //https://elixir.bootlin.com/linux/v6.16/source/include/linux/random.h#L126
         //https://elixir.bootlin.com/linux/v6.16/source/drivers/char/random.c#L137
+        //https://docs.kernel.org/6.6/kernel-hacking/hacking.html#user-context
+        //setup_passwd() will be called only once, by the module_init func,
+        //which is runned in user-context so it is ok to have a blocking
+        //get_random_bytes_wait, to have good random numbers (crypto-secure)
         while(get_random_bytes_wait(auth_passwd_salt, 32) == -ERESTARTSYS)
             ;
 
