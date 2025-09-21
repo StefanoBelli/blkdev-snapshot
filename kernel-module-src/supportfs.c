@@ -3,6 +3,7 @@
 #include <linux/mutex.h>
 
 #include <supportfs.h>
+#include <kmalloc-failed.h>
 
 struct __supported_fs {
 	struct bdsnap_supported_fs fs;
@@ -43,6 +44,7 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs* fs) {
 		(struct __supported_fs*) kmalloc(sizeof(struct __supported_fs), GFP_KERNEL);
 	
 	if(newly_supported_fs == NULL) {
+		print_kmalloc_failed();
 		mutex_unlock(&g_lock);
 		return BDSNAP_ERR_REG_MEMEXHAUSTED;
 	}
