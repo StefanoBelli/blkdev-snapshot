@@ -1,8 +1,8 @@
 SHELL=/bin/bash
 modname=blkdev-snapshot
 obj-m := $(modname).o
-$(modname)-objs += main.o activation.o passwd.o
-ccflags-y += -Wall -W -Wextra -Wshadow -Wno-unused-parameter -O2 -I$(src)/include
+$(modname)-objs += main.o activation.o passwd.o supportfs.o
+ccflags-y += -Wall -W -Wextra -Wshadow -O2 -I$(src)/include -Wno-unused-parameter -Wno-shadow
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) modules
