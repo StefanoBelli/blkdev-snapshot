@@ -3,6 +3,7 @@
 #include <linux/blkdev.h>
 #include <linux/major.h>
 #include <linux/loop.h>
+#include <linux/rcupdate.h>
 #include <linux/version.h>
 
 #include <devices.h>
@@ -10,10 +11,11 @@
 #include <kmalloc-failed.h>
 
 struct blkdev_object {
+	struct rhash_head linkage;
+	struct rcu_head rcu;
+
 	dev_t key;
 	unsigned long magic;
-
-	struct rhash_head linkage;
 };
 
 static const struct rhashtable_params blkdevs_ht_params = {
@@ -24,11 +26,17 @@ static const struct rhashtable_params blkdevs_ht_params = {
 
 static struct rhashtable blkdevs_ht;
 
+static void blkdevs_ht_free_fn(void* ptr, void* arg) {
+	struct blkdev_object *bdptr = (struct blkdev_object*) ptr;
+	kfree_rcu(bdptr, rcu);
+}
+
 struct loop_object {
+	struct rhash_head linkage;
+	struct rcu_head rcu;
+
 	char key[PATH_MAX];
 	unsigned long magic;
-
-	struct rhash_head linkage;
 };
 
 static const struct rhashtable_params loops_ht_params = {
@@ -38,6 +46,11 @@ static const struct rhashtable_params loops_ht_params = {
 };
 
 static struct rhashtable loops_ht;
+
+static void loops_ht_free_fn(void* ptr, void* arg) {
+	struct loop_object *loptr = (struct loop_object*) ptr;
+	kfree_rcu(loptr, rcu);
+}
 
 
 static int get_full_path(const char* path, char* out_full_path) {
@@ -243,8 +256,72 @@ int register_device(const char* path) {
 	return -EINVAL;
 }
 
-bool unregister_device(const char* path) {
-	return false;
+static int try_to_remove_loop_device(const char* path) {
+	char *full_path = (char*) kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
+	if(full_path == NULL) {
+		print_kmalloc_failed();
+		return -ENOMEM;
+	}
+
+	rcu_read_lock();
+
+	struct loop_object *cur_obj = 
+		rhashtable_lookup_fast(&loops_ht, full_path, loops_ht_params);
+
+	kfree(full_path);
+
+	if (
+		cur_obj != NULL && 
+		rhashtable_remove_fast(&loops_ht, &cur_obj->linkage, loops_ht_params) == 0
+	) {
+		kfree_rcu(cur_obj, rcu);
+	}
+
+	rcu_read_unlock();
+
+	return cur_obj != NULL;
+}
+
+static int try_to_remove_block_device(const struct block_device* bdev) {
+	rcu_read_lock();
+
+	struct blkdev_object *cur_obj = 
+		rhashtable_lookup_fast(&blkdevs_ht, &bdev->bd_dev, blkdevs_ht_params);
+
+	if (
+		cur_obj != NULL && 
+		rhashtable_remove_fast(&blkdevs_ht, &cur_obj->linkage, blkdevs_ht_params) == 0
+	) {
+		kfree_rcu(cur_obj, rcu);
+	}
+
+	rcu_read_unlock();
+
+	return cur_obj != NULL;
+}
+
+int unregister_device(const char* path) {
+	struct inode *ino;
+	int err = get_inode_from_path(path, &ino);
+	if(err) {
+		return err;
+	}
+	
+	if(S_ISBLK(ino->i_mode)) {
+		struct block_device *bdev = I_BDEV(ino);
+		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
+			char* loop_backing_path = get_loop_device_backing_file(bdev);
+			int err = try_to_remove_loop_device(loop_backing_path);
+			kfree(loop_backing_path);
+			return err;
+		} else {
+			return try_to_remove_block_device(bdev);
+		}
+	} else if(S_ISREG(ino->i_mode)) {
+		return try_to_remove_loop_device(path);
+	}
+
+	return -EINVAL;
 }
 
 bool setup_devices(void) {
@@ -253,12 +330,14 @@ bool setup_devices(void) {
 	}
 
 	if(rhashtable_init(&loops_ht, &loops_ht_params) != 0) {
+		rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
 		return false;
 	}
 
 	return true;
 }
 
-bool destroy_devices(void) {
-	return false;
+void destroy_devices(void) {
+	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
+	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
 }
