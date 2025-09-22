@@ -90,7 +90,6 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 		return NULL;
 	}
 
-	const char *disk_name = bdev->bd_disk->disk_name;
 	char *sysfs_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(sysfs_path == NULL) {
 		pr_err_failure("kmalloc");
@@ -98,7 +97,7 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 		return NULL;
 	}
 
-	snprintf(sysfs_path, PATH_MAX, "/sys/block/%s/loop/backing_file", disk_name);
+	will not compile ehhehehehhe
 
 	struct file *filp = filp_open(sysfs_path, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
@@ -118,7 +117,9 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 		return NULL;
 	}
 
-	out_backing_path[read_err] = 0;
+	if(out_backing_path[read_err - 1] != 0) {
+		out_backing_path[read_err - 1] = 0;
+	}
 
 	filp_close(filp, 0);
 	return out_backing_path;
@@ -185,8 +186,12 @@ int register_device(const char* path) {
 	
 	if(S_ISBLK(ino->i_mode)) {
 		struct block_device *bdev = I_BDEV(ino);
-		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
+		if(MAJOR(bdev->bd_dev) == LOOP_MAJOR) {
 			char* loop_backing_path = get_loop_device_backing_file(bdev);
+			if(loop_backing_path == NULL) {
+				return -ENOBUFS;
+			}
+
 			int err = try_to_insert_loop_device(loop_backing_path);
 			kfree(loop_backing_path);
 			return err;
@@ -269,6 +274,10 @@ int unregister_device(const char* path) {
 		struct block_device *bdev = I_BDEV(ino);
 		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
 			char* loop_backing_path = get_loop_device_backing_file(bdev);
+			if(loop_backing_path == NULL) {
+				return -ENOBUFS;
+			}
+
 			int err = try_to_remove_loop_device(loop_backing_path);
 			kfree(loop_backing_path);
 			return err;
