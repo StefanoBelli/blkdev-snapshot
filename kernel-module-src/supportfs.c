@@ -3,7 +3,7 @@
 #include <linux/mutex.h>
 
 #include <supportfs.h>
-#include <kmalloc-failed.h>
+#include <pr-err-failure.h>
 
 struct __supported_fs {
 	struct bdsnap_supported_fs fs;
@@ -12,7 +12,7 @@ struct __supported_fs {
 
 static LIST_HEAD(supported_fss);
 static DEFINE_MUTEX(g_lock);
-static int allows_registering = 1;
+static bool allows_registering = true;
 
 static inline struct __supported_fs *fs_is_already_supported(unsigned long srch_magic) {
 	struct __supported_fs *pos;
@@ -44,14 +44,16 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs* fs) {
 		(struct __supported_fs*) kzalloc(sizeof(struct __supported_fs), GFP_KERNEL);
 	
 	if(newly_supported_fs == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kzalloc");
 		mutex_unlock(&g_lock);
 		return BDSNAP_ERR_REG_MEMEXHAUSTED;
 	}
 
 	memcpy(&newly_supported_fs->fs, fs, sizeof(struct bdsnap_supported_fs));
 
-	if(newly_supported_fs->fs.init_support()) {
+	int initerr = newly_supported_fs->fs.init_support();
+	if(initerr != 0) {
+		pr_err_failure_with_code("init_support", initerr);
 		kfree(newly_supported_fs);
 		mutex_unlock(&g_lock);
 		return BDSNAP_ERR_REG_INITFAIL;
@@ -74,17 +76,15 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs* fs) {
 
 EXPORT_SYMBOL_GPL(bdsnap_register_supported_fs);
 
-int bdsnap_cleanup_supported_fs(void) {
-	if(mutex_lock_interruptible(&g_lock) != 0) {
-		return BDSNAP_ERR_CLEANUP_MTXLCKEINTR;
-	}
+void destroy_supported_fs(void) {
+	mutex_lock(&g_lock);
 
 	if(!allows_registering) {
 		mutex_unlock(&g_lock);
-		return BDSNAP_ERR_CLEANUP_ALREADYDONE;
+		return;
 	}
 	
-	allows_registering = 0;
+	allows_registering = false;
 	
 	struct __supported_fs *pos;
 	struct __supported_fs *tmp;
@@ -97,6 +97,4 @@ int bdsnap_cleanup_supported_fs(void) {
 		list_del(&pos->node);
 		kfree(pos);
 	}
-
-	return BDSNAP_ERR_CLEANUP_OK;
 }

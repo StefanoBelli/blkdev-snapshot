@@ -8,7 +8,8 @@
 
 #include <passwd.h>
 #include <activation.h>
-#include <kmalloc-failed.h>
+#include <pr-err-failure.h>
+
 
 static int auth_check(const char* passwd);
 
@@ -94,7 +95,7 @@ static int call_wrapper(char* data, size_t datalen, wrapped_call_fnt callback) {
 static ssize_t __sysfs_call_wrapper(const char* data, size_t datalen, wrapped_call_fnt fn) {
     char* buf = kmalloc(sizeof(char) * datalen, GFP_KERNEL);
     if(buf == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kmalloc");
         return -ENOMEM;
     }
 
@@ -160,7 +161,7 @@ static long activation_chrdev_ioctl(struct file* f, unsigned int cmd, unsigned l
 
     char *buf = kmalloc(sizeof(char) * user_args->datalen, GFP_KERNEL);
     if(buf == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kmalloc");
         return -ENOMEM;
     }
 
@@ -201,17 +202,15 @@ int setup_activation_mechanism(void) {
     struct kobject *this_module_kobj = &THIS_MODULE->mkobj.kobj;
 
     if((rv = sysfs_create_file(this_module_kobj, &activate_kobj_attribute.attr)) != 0) {
+		pr_err_failure_with_code("sysfs_create_file", rv);
 		destroy_passwd();
-        pr_err("%s: sysfs_create_file(activate_snapshot) failed, errno=%d\n", 
-            module_name(THIS_MODULE), rv);
         return rv;
     }
 
     if((rv = sysfs_create_file(this_module_kobj, &deactivate_kobj_attribute.attr)) != 0) {
+		pr_err_failure_with_code("sysfs_create_file", rv);
         sysfs_remove_file(this_module_kobj, &activate_kobj_attribute.attr);
 		destroy_passwd();
-        pr_err("%s: sysfs_create_file(deactivate_snapshot) failed, errno=%d\n", 
-            module_name(THIS_MODULE), rv);
         return rv;
     }
 #else
@@ -219,10 +218,9 @@ int setup_activation_mechanism(void) {
         ACTIVATION_CHRDEV_NAME, &activation_chrdev_fops);
 
     if(activation_chrdev_maj < 0) {
+		pr_err_failure_with_code("register_chrdev", activation_chrdev_maj);
 		unregister_chrdev(activation_chrdev_maj, ACTIVATION_CHRDEV_NAME);
 		destroy_passwd();
-        pr_err("%s: register_chrdev(...) failed, errno=%d\n", 
-            module_name(THIS_MODULE), activation_chrdev_maj);
         return activation_chrdev_maj;
     } else if(activation_dev_req_maj == 0) {
         pr_info("%s: activation device for blkdev snapshot got major number: %d\n", 

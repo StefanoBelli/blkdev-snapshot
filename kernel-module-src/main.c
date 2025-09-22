@@ -2,6 +2,9 @@
 #include <linux/module.h>
 
 #include <activation.h>
+#include <devices.h>
+#include <supportfs.h>
+#include <pr-err-failure.h>
 
 #ifdef CONFIG_SYSFS
 char* activation_ct_passwd;
@@ -39,11 +42,28 @@ int __init init_blkdev_snapshot_module(void) {
         return -ENODATA;
     }
 
-    return setup_activation_mechanism();
+	int rv;
+
+    rv = setup_activation_mechanism();
+	if(rv != 0) {
+		pr_err_failure_with_code("setup_activation_mechanism", rv);
+		return rv;
+	}
+	
+	rv = setup_devices();
+	if(rv != 0) {
+		pr_err_failure_with_code("setup_devices", rv);
+		return rv;
+	}
+
+	return 0;
 }
+
 
 void __exit exit_blkdev_snapshot_module(void) {
     destroy_activation_mechanism();
+	destroy_devices();
+	destroy_supported_fs();
 }
 
 module_init(init_blkdev_snapshot_module);

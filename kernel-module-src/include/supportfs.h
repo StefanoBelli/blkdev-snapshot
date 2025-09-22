@@ -29,10 +29,6 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs*);
 
 /* non-exported symbols (only avail within this module) */
 
-#define BDSNAP_ERR_CLEANUP_OK 0
-#define BDSNAP_ERR_CLEANUP_MTXLCKEINTR 1
-#define BDSNAP_ERR_CLEANUP_ALREADYDONE 2
-
-int bdsnap_cleanup_supported_fs(void);
+void destroy_supported_fs(void);
 
 #endif

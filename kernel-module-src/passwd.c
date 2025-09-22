@@ -3,7 +3,7 @@
 #include <crypto/hash.h>
 
 #include <passwd.h>
-#include <kmalloc-failed.h>
+#include <pr-err-failure.h>
 
 //https://www.kernel.org/doc/html/v5.0/crypto/api-digest.html#synchronous-message-digest-api    
 //https://www.kernel.org/doc/html/v4.14/crypto/api-samples.html#code-example-for-use-of-operational-state-memory-with-shash
@@ -18,7 +18,7 @@ static int hash_sha256(const char* data, size_t datalen, char* output) {
 
     struct shash_desc *desc = kmalloc(size, GFP_KERNEL);
     if (desc == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kmalloc");
         return -ENOMEM;
     }
     
@@ -29,8 +29,8 @@ static int hash_sha256(const char* data, size_t datalen, char* output) {
 
     char* data_with_salt = kmalloc(datasize + saltsize, GFP_KERNEL);
     if(data_with_salt == NULL) {
+		pr_err_failure("kmalloc");
 		kfree(desc);
-		print_kmalloc_failed();
         return -ENOMEM;
     }
 
@@ -50,8 +50,7 @@ int password_cmp(const char* passwd) {
         char hashed_passwd[32];
         int rv = hash_sha256(passwd, strlen(passwd), hashed_passwd);
         if(rv < 0) {
-            pr_err("%s: hash_sha256(...) failed, errno=%d\n", 
-                module_name(THIS_MODULE), rv);
+			pr_err_failure_with_code("hash_sha256", rv);
             return rv;
         }
 
@@ -88,8 +87,8 @@ int setup_passwd(void) {
     if (!IS_ERR(sha256_shash)) {
         auth_passwd = kmalloc(32 * sizeof(char), GFP_KERNEL);
         if(auth_passwd == NULL) {
+			pr_err_failure("kmalloc");
 			destroy_passwd();
-			print_kmalloc_failed();
             return -ENOMEM;
         }
 
@@ -100,27 +99,26 @@ int setup_passwd(void) {
         //which is runned in user-context so it is ok to have a blocking
         //get_random_bytes_wait, to have good random numbers (crypto-secure)
         if(get_random_bytes_wait(auth_passwd_salt, 32) == -ERESTARTSYS) {
+			pr_err_failure("get_random_bytes_wait");
 			destroy_passwd();
-			pr_err("%s: get_random_bytes_wait(...) failed\n", module_name(THIS_MODULE));
 			return -EINTR;
 		}
 
         int rv = hash_sha256(activation_ct_passwd, actpasswdlen, auth_passwd);
         if(rv < 0) {
+			pr_err_failure_with_code("hash_sha256", rv);
 			destroy_passwd();
-			pr_err("%s: hash_sha256(...) failed, errno=%d\n",
-                   module_name(THIS_MODULE), rv);
             return rv;
         }
     } else {
-        pr_warn("%s: fallback to ct passwd - crypto_alloc_shash(...) failed, errno=%ld\n", 
-            module_name(THIS_MODULE), PTR_ERR(sha256_shash));
+		pr_err_failure_with_code("crypto_alloc_shash", PTR_ERR(sha256_shash));
+		pr_warn("%s: fallback to ct passwd\n", module_name(THIS_MODULE));
 
         sha256_shash = NULL;
         auth_passwd = kmalloc((actpasswdlen + 1) * sizeof(char), GFP_KERNEL);
         if(auth_passwd == NULL) {
+			pr_err_failure("kmalloc");
 			destroy_passwd();
-			print_kmalloc_failed();
             return -ENOMEM;
         }
 

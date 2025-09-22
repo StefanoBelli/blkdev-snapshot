@@ -4,11 +4,10 @@
 #include <linux/major.h>
 #include <linux/loop.h>
 #include <linux/rcupdate.h>
-#include <linux/version.h>
 
 #include <devices.h>
 #include <supportfs.h>
-#include <kmalloc-failed.h>
+#include <pr-err-failure.h>
 
 struct blkdev_object {
 	struct rhash_head linkage;
@@ -60,8 +59,7 @@ static int get_full_path(const char* path, char* out_full_path) {
 
 	void* _ptr_in_buf = d_path(&_path, out_full_path, sizeof(char) * PATH_MAX);
 	if(IS_ERR(_ptr_in_buf)) {
-		pr_err("%s: d_path(...) failed with error=%ld\n", 
-			module_name(THIS_MODULE), PTR_ERR(_ptr_in_buf));
+		pr_err_failure_with_code("d_path", PTR_ERR(_ptr_in_buf));
 		path_put(&_path);
 		return PTR_ERR(_ptr_in_buf);
 	}
@@ -88,15 +86,15 @@ static int get_inode_from_path(const char *path, struct inode **out_inode) {
 static char *get_loop_device_backing_file(const struct block_device *bdev) {
 	char *out_backing_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(out_backing_path == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kmalloc");
 		return NULL;
 	}
 
 	const char *disk_name = bdev->bd_disk->disk_name;
 	char *sysfs_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(sysfs_path == NULL) {
+		pr_err_failure("kmalloc");
 		kfree(out_backing_path);
-		print_kmalloc_failed();
 		return NULL;
 	}
 
@@ -104,10 +102,9 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 
 	struct file *filp = filp_open(sysfs_path, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
+		pr_err_failure_with_code("filp_open", PTR_ERR(filp));
 		kfree(sysfs_path);
 		kfree(out_backing_path);	
-		pr_err("%s: filp_open(...) failed with error=%ld\n", 
-			module_name(THIS_MODULE), PTR_ERR(filp));
 		return NULL;
 	}
 
@@ -115,10 +112,9 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 
 	ssize_t read_err = kernel_read(filp, out_backing_path, PATH_MAX - 1, NULL);
 	if (read_err <= 0) {
+		pr_err_failure_with_code("kernel_read", read_err);
 		kfree(out_backing_path);
 		filp_close(filp, 0);
-		pr_err("%s: kernel_read(...) failed with error=%ld\n", 
-			module_name(THIS_MODULE), read_err);
 		return NULL;
 	}
 
@@ -131,7 +127,7 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 static int try_to_insert_loop_device(const char* path) {
 	struct loop_object *new_obj = kzalloc(sizeof(struct loop_object), GFP_KERNEL);
 	if(new_obj == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kzalloc");
 		return -ENOMEM;
 	}
 
@@ -145,9 +141,8 @@ static int try_to_insert_loop_device(const char* path) {
 		rhashtable_lookup_get_insert_fast(&loops_ht, &new_obj->linkage, loops_ht_params);
 	
 	if(IS_ERR(old_obj)) {
+		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
 		kfree(new_obj);
-		pr_err("%s: rhashtable_lookup_get_insert_fast(...) failed, error=%ld\n", 
-			module_name(THIS_MODULE), PTR_ERR(old_obj));
 		return -EFAULT;
 	} else if(old_obj != NULL) {
 		kfree(new_obj);
@@ -160,7 +155,7 @@ static int try_to_insert_loop_device(const char* path) {
 static int try_to_insert_block_device(const struct block_device* bdev) {
 	struct blkdev_object *new_obj = kzalloc(sizeof(struct blkdev_object), GFP_KERNEL);
 	if(new_obj == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kzalloc");
 		return -ENOMEM;
 	}
 
@@ -170,9 +165,8 @@ static int try_to_insert_block_device(const struct block_device* bdev) {
 		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
 		
 	if(IS_ERR(old_obj)) {
+		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
 		kfree(new_obj);
-		pr_err("%s: rhashtable_lookup_get_insert_fast(...) failed, error=%ld\n", 
-			module_name(THIS_MODULE), PTR_ERR(old_obj));
 		return -EFAULT;
 	} else if(old_obj != NULL) {
 		kfree(new_obj);
@@ -209,7 +203,7 @@ int register_device(const char* path) {
 static int try_to_remove_loop_device(const char* path) {
 	char *full_path = (char*) kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(full_path == NULL) {
-		print_kmalloc_failed();
+		pr_err_failure("kzalloc");
 		return -ENOMEM;
 	}
 
@@ -291,16 +285,3 @@ void destroy_devices(void) {
 	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
 	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
 }
-
-unsigned long get_block_magic(const struct block_device* b) {
-	// https://www.linuxquestions.org/questions/showthread.php?p=6490737#post6490737
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
-	struct super_block *sb = (struct super_block*) b->bd_holder;
-#else
-	struct super_block *sb = b->bd_super;
-#endif
-
-	return sb->s_magic;
-}
-
-EXPORT_SYMBOL_GPL(get_block_magic);
