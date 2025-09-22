@@ -15,7 +15,6 @@ struct blkdev_object {
 	struct rcu_head rcu;
 
 	dev_t key;
-	unsigned long magic;
 };
 
 static const struct rhashtable_params blkdevs_ht_params = {
@@ -36,7 +35,6 @@ struct loop_object {
 	struct rcu_head rcu;
 
 	char key[PATH_MAX];
-	unsigned long magic;
 };
 
 static const struct rhashtable_params loops_ht_params = {
@@ -130,43 +128,12 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 	return out_backing_path;
 }
 
-static bool get_loop_magic(const char* p, unsigned long *out_magic) {
-	struct file *filp = filp_open(p, O_RDONLY, 0);
-	if(IS_ERR(filp)) {
-		pr_err("%s: filp_open(...) failed with error=%ld\n", 
-			module_name(THIS_MODULE), PTR_ERR(filp));
-		return false;
-	}
-
-	ssize_t read_err = kernel_read(filp, out_magic, sizeof(*out_magic), NULL);
-	if(read_err != sizeof(*out_magic)) {
-		filp_close(filp, 0);
-		pr_err("%s: kernel_read(...) did not respond as expected [read_err = %ld] != [expected = %ld]\n",
-			module_name(THIS_MODULE), read_err, sizeof(*out_magic));
-		return false;
-	}
-
-	filp_close(filp, 0);
-	return true;
-}
-
 static int try_to_insert_loop_device(const char* path) {
-	unsigned long magic;
-	if(!get_loop_magic(path, &magic)) {
-		return -EFAULT;
-	}
-
-	if(!bdsnap_has_supported_fs(magic)) {
-		return -EBADTYPE;
-	}
-
 	struct loop_object *new_obj = kzalloc(sizeof(struct loop_object), GFP_KERNEL);
 	if(new_obj == NULL) {
 		print_kmalloc_failed();
 		return -ENOMEM;
 	}
-
-	new_obj->magic = magic;
 
 	int gfpath_err = get_full_path(path, new_obj->key);
 	if(gfpath_err != 0) {
@@ -190,30 +157,13 @@ static int try_to_insert_loop_device(const char* path) {
 	return 0;
 }
 
-static unsigned long get_block_magic(const struct block_device* b) {
-	// https://www.linuxquestions.org/questions/showthread.php?p=6490737#post6490737
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
-	struct super_block *sb = (struct super_block*) b->bd_holder;
-#else
-	struct super_block *sb = b->bd_super;
-#endif
-
-	return sb->s_magic;
-}
-
 static int try_to_insert_block_device(const struct block_device* bdev) {
-	unsigned long magic = get_block_magic(bdev);
-	if(!bdsnap_has_supported_fs(magic)) {
-		return -EBADTYPE;
-	}
-
 	struct blkdev_object *new_obj = kzalloc(sizeof(struct blkdev_object), GFP_KERNEL);
 	if(new_obj == NULL) {
 		print_kmalloc_failed();
 		return -ENOMEM;
 	}
 
-	new_obj->magic = magic;
 	new_obj->key = bdev->bd_dev;
 
 	struct blkdev_object *old_obj = 
@@ -341,3 +291,16 @@ void destroy_devices(void) {
 	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
 	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
 }
+
+unsigned long get_block_magic(const struct block_device* b) {
+	// https://www.linuxquestions.org/questions/showthread.php?p=6490737#post6490737
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	struct super_block *sb = (struct super_block*) b->bd_holder;
+#else
+	struct super_block *sb = b->bd_super;
+#endif
+
+	return sb->s_magic;
+}
+
+EXPORT_SYMBOL_GPL(get_block_magic);

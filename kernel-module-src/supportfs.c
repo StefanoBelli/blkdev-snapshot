@@ -100,19 +100,3 @@ int bdsnap_cleanup_supported_fs(void) {
 
 	return BDSNAP_ERR_CLEANUP_OK;
 }
-
-bool bdsnap_has_supported_fs(unsigned long magic) {
-	if(mutex_lock_interruptible(&g_lock) != 0) {
-		return false;
-	}
-
-	if(!allows_registering) {
-		mutex_unlock(&g_lock);
-		return false;
-	}
-
-	bool has_support = fs_is_already_supported(magic) != NULL;
-	mutex_unlock(&g_lock);
-
-	return has_support;
-}

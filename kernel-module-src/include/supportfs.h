@@ -35,6 +35,4 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs*);
 
 int bdsnap_cleanup_supported_fs(void);
 
-bool bdsnap_has_supported_fs(unsigned long);
-
 #endif
