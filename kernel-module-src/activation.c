@@ -7,6 +7,7 @@
 #endif
 
 #include <passwd.h>
+#include <devices.h>
 #include <activation.h>
 #include <pr-err-failure.h>
 
@@ -21,7 +22,7 @@ static int activate_snapshot(const char* dev_name, const char* passwd) {
         return auth_check_rv;
     }
 
-    return 0;
+	return register_device(dev_name);
 }
 
 static int deactivate_snapshot(const char* dev_name, const char* passwd) {
@@ -30,8 +31,7 @@ static int deactivate_snapshot(const char* dev_name, const char* passwd) {
         return auth_check_rv;
     }
 
-
-    return 0;
+    return unregister_device(dev_name);
 }
 
 /* ---- */

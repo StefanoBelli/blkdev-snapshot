@@ -207,6 +207,12 @@ static int try_to_remove_loop_device(const char* path) {
 		return -ENOMEM;
 	}
 
+	int gfpath_err = get_full_path(path, full_path);
+	if(gfpath_err != 0) {
+		kfree(full_path);
+		return gfpath_err;
+	}
+
 	rcu_read_lock();
 
 	struct loop_object *cur_obj = 
@@ -214,16 +220,20 @@ static int try_to_remove_loop_device(const char* path) {
 
 	kfree(full_path);
 
-	if (
-		cur_obj != NULL && 
-		rhashtable_remove_fast(&loops_ht, &cur_obj->linkage, loops_ht_params) == 0
-	) {
-		kfree_rcu(cur_obj, rcu);
+	if(cur_obj == NULL) {
+		rcu_read_unlock();
+		return -ENOKEY;
 	}
 
-	rcu_read_unlock();
+	if (rhashtable_remove_fast(&loops_ht, &cur_obj->linkage, loops_ht_params) == 0) {
+		kfree_rcu(cur_obj, rcu);
+		rcu_read_unlock();
+	} else {
+		rcu_read_unlock();
+		return -ENOKEY;
+	}
 
-	return cur_obj != NULL;
+	return 0;
 }
 
 static int try_to_remove_block_device(const struct block_device* bdev) {
@@ -231,17 +241,21 @@ static int try_to_remove_block_device(const struct block_device* bdev) {
 
 	struct blkdev_object *cur_obj = 
 		rhashtable_lookup_fast(&blkdevs_ht, &bdev->bd_dev, blkdevs_ht_params);
-
-	if (
-		cur_obj != NULL && 
-		rhashtable_remove_fast(&blkdevs_ht, &cur_obj->linkage, blkdevs_ht_params) == 0
-	) {
-		kfree_rcu(cur_obj, rcu);
+		
+	if(cur_obj == NULL) {
+		rcu_read_unlock();
+		return -ENOKEY;
 	}
 
-	rcu_read_unlock();
+	if (rhashtable_remove_fast(&blkdevs_ht, &cur_obj->linkage, blkdevs_ht_params) == 0) {
+		kfree_rcu(cur_obj, rcu);
+		rcu_read_unlock();
+	} else {
+		rcu_read_unlock();
+		return -ENOKEY;
+	}
 
-	return cur_obj != NULL;
+	return 0;
 }
 
 int unregister_device(const char* path) {
@@ -268,17 +282,17 @@ int unregister_device(const char* path) {
 	return -EINVAL;
 }
 
-bool setup_devices(void) {
+int setup_devices(void) {
 	if(rhashtable_init(&blkdevs_ht, &blkdevs_ht_params) != 0) {
-		return false;
+		return -EINVAL;
 	}
 
 	if(rhashtable_init(&loops_ht, &loops_ht_params) != 0) {
 		rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
-		return false;
+		return -EINVAL;
 	}
 
-	return true;
+	return 0;
 }
 
 void destroy_devices(void) {

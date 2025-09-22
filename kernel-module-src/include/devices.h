@@ -4,7 +4,7 @@
 /**
  * Each of these calls in process context
  */
-bool setup_devices(void);
+int setup_devices(void);
 void destroy_devices(void);
 int register_device(const char*);
 int unregister_device(const char*);

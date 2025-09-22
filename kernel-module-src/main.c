@@ -6,6 +6,7 @@
 #include <supportfs.h>
 #include <pr-err-failure.h>
 
+
 #ifdef CONFIG_SYSFS
 char* activation_ct_passwd;
 module_param_named(actpasswd, activation_ct_passwd, charp, 0);
@@ -35,6 +36,12 @@ MODULE_AUTHOR("Stefano Belli");
 int __init init_blkdev_snapshot_module(void);
 void __exit exit_blkdev_snapshot_module(void);
 
+#define _SETUP(name) \
+	rv = setup_##name(); \
+	if(rv != 0) { \
+		pr_err_failure_with_code("setup_"#name, rv); \
+		return rv; \
+	}
 
 int __init init_blkdev_snapshot_module(void) {
     if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
@@ -42,23 +49,15 @@ int __init init_blkdev_snapshot_module(void) {
         return -ENODATA;
     }
 
-	int rv;
+	int rv = 0;
 
-    rv = setup_activation_mechanism();
-	if(rv != 0) {
-		pr_err_failure_with_code("setup_activation_mechanism", rv);
-		return rv;
-	}
-	
-	rv = setup_devices();
-	if(rv != 0) {
-		pr_err_failure_with_code("setup_devices", rv);
-		return rv;
-	}
+	_SETUP(devices);
+	_SETUP(activation_mechanism);
 
-	return 0;
+	return rv;
 }
 
+#undef _SETUP
 
 void __exit exit_blkdev_snapshot_module(void) {
     destroy_activation_mechanism();
