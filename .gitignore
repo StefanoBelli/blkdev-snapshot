@@ -4,6 +4,7 @@ lkmdev-editor-setup-kit/
 
 bin/
 
+*.o.d
 *.cmd
 *.o
 *.ko
