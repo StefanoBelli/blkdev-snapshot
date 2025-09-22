@@ -41,7 +41,7 @@ int bdsnap_register_supported_fs(const struct bdsnap_supported_fs* fs) {
 	}
 
 	struct __supported_fs *newly_supported_fs = 
-		(struct __supported_fs*) kmalloc(sizeof(struct __supported_fs), GFP_KERNEL);
+		(struct __supported_fs*) kzalloc(sizeof(struct __supported_fs), GFP_KERNEL);
 	
 	if(newly_supported_fs == NULL) {
 		print_kmalloc_failed();
