@@ -2,7 +2,6 @@
 #include <linux/blkdev.h>
 #include <linux/kprobes.h>
 #include <linux/version.h>
-#include <linux/fs.h>
 
 #include <epoch.h>
 #include <get-loop-backing-file.h>
