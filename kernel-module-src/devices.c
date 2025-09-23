@@ -8,6 +8,7 @@
 #include <devices.h>
 #include <supportfs.h>
 #include <pr-err-failure.h>
+#include <get-loop-backing-file.h>
 
 struct blkdev_object {
 	struct rhash_head linkage;
@@ -84,16 +85,9 @@ static int get_inode_from_path(const char *path, struct inode **out_inode) {
 }
 
 static char *get_loop_device_backing_file(dev_t bddevt) {
-	char *out_backing_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
+	char *out_backing_path = (char*) kzalloc(sizeof(char) * (__MY_LO_NAME_SIZE + 1), GFP_KERNEL);
 	if(out_backing_path == NULL) {
 		pr_err_failure("kmalloc");
-		return NULL;
-	}
-
-	char *sysfs_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
-	if(sysfs_path == NULL) {
-		pr_err_failure("kmalloc");
-		kfree(out_backing_path);
 		return NULL;
 	}
 	
@@ -105,33 +99,14 @@ static char *get_loop_device_backing_file(dev_t bddevt) {
 
 	struct block_device *bd = file_bdev(f_bd);
 
-	snprintf(sysfs_path, PATH_MAX, "/sys/block/%s/loop/backing_file", bd->bd_disk->disk_name);
+	const char* bkfile = get_loop_backing_file(bd);
 
+	strncpy(out_backing_path, bkfile, __MY_LO_NAME_SIZE);
+	
 	bdev_fput(f_bd);
 
-	struct file *filp = filp_open(sysfs_path, O_RDONLY, 0);
-	if (IS_ERR(filp)) {
-		pr_err_failure_with_code("filp_open", PTR_ERR(filp));
-		kfree(sysfs_path);
-		kfree(out_backing_path);	
-		return NULL;
-	}
+	pr_err("%s\n", out_backing_path);
 
-	kfree(sysfs_path);
-
-	ssize_t read_err = kernel_read(filp, out_backing_path, PATH_MAX - 1, NULL);
-	if (read_err <= 0) {
-		pr_err_failure_with_code("kernel_read", read_err);
-		kfree(out_backing_path);
-		filp_close(filp, 0);
-		return NULL;
-	}
-
-	if(out_backing_path[read_err - 1] != 0) {
-		out_backing_path[read_err - 1] = 0;
-	}
-
-	filp_close(filp, 0);
 	return out_backing_path;
 }
 

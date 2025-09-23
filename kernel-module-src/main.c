@@ -3,6 +3,7 @@
 
 #include <activation.h>
 #include <devices.h>
+#include <epoch.h>
 #include <supportfs.h>
 #include <pr-err-failure.h>
 
@@ -36,12 +37,16 @@ MODULE_AUTHOR("Stefano Belli");
 int __init init_blkdev_snapshot_module(void);
 void __exit exit_blkdev_snapshot_module(void);
 
+#define __SETUP_RVVAR rv
+#define START_SETUP_BLOCK int __SETUP_RVVAR = 0
+#define END_SETUP_BLOCK return __SETUP_RVVAR
+
 #define _SETUP(name) \
-	rv = setup_##name(); \
-	if(rv != 0) { \
-		pr_err_failure_with_code("setup_"#name, rv); \
-		return rv; \
-	}
+	__SETUP_RVVAR = setup_##name(); \
+	if(__SETUP_RVVAR != 0)
+
+#define pr_err_setup(name) \
+	pr_err_failure_with_code("setup"#name, __SETUP_RVVAR)
 
 int __init init_blkdev_snapshot_module(void) {
     if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
@@ -49,18 +54,38 @@ int __init init_blkdev_snapshot_module(void) {
         return -ENODATA;
     }
 
-	int rv = 0;
+	START_SETUP_BLOCK;
 
-	_SETUP(devices);
-	_SETUP(activation_mechanism);
+	_SETUP(devices) {
+		pr_err_setup(devices);
+		END_SETUP_BLOCK;
+	}
 
-	return rv;
+	_SETUP(epoch_mgmt) {
+		pr_err_setup(epoch_mgmt);
+		destroy_devices();
+		END_SETUP_BLOCK;
+	}
+
+	_SETUP(activation_mechanism) {
+		pr_err_setup(activation_mechanism);
+		destroy_epoch_mgmt();
+		destroy_devices();
+		END_SETUP_BLOCK;
+	}
+
+	END_SETUP_BLOCK;
 }
 
+#undef __SETUP_RVVAR
+#undef START_SETUP_BLOCK
+#undef END_SETUP_BLOCK
 #undef _SETUP
+#undef pr_err_setup
 
 void __exit exit_blkdev_snapshot_module(void) {
     destroy_activation_mechanism();
+	destroy_epoch_mgmt();
 	destroy_devices();
 	destroy_supported_fs();
 }
