@@ -83,7 +83,7 @@ static int get_inode_from_path(const char *path, struct inode **out_inode) {
 	return 0;
 }
 
-static char *get_loop_device_backing_file(const struct block_device *bdev) {
+static char *get_loop_device_backing_file(dev_t bddevt) {
 	char *out_backing_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(out_backing_path == NULL) {
 		pr_err_failure("kmalloc");
@@ -96,8 +96,18 @@ static char *get_loop_device_backing_file(const struct block_device *bdev) {
 		kfree(out_backing_path);
 		return NULL;
 	}
+	
+	struct file* f_bd = bdev_file_open_by_dev(bddevt, BLK_OPEN_READ, NULL, NULL);
+	if(IS_ERR(f_bd)) {
+		pr_err_failure_with_code("bdev_file_open_by_dev", PTR_ERR(f_bd));
+		return NULL;
+	}
 
-	will not compile ehhehehehhe
+	struct block_device *bd = file_bdev(f_bd);
+
+	snprintf(sysfs_path, PATH_MAX, "/sys/block/%s/loop/backing_file", bd->bd_disk->disk_name);
+
+	bdev_fput(f_bd);
 
 	struct file *filp = filp_open(sysfs_path, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
@@ -153,14 +163,14 @@ static int try_to_insert_loop_device(const char* path) {
 	return 0;
 }
 
-static int try_to_insert_block_device(const struct block_device* bdev) {
+static int try_to_insert_block_device(dev_t bddevt) {
 	struct blkdev_object *new_obj = kzalloc(sizeof(struct blkdev_object), GFP_KERNEL);
 	if(new_obj == NULL) {
 		pr_err_failure("kzalloc");
 		return -ENOMEM;
 	}
 
-	new_obj->key = bdev->bd_dev;
+	new_obj->key = bddevt;
 
 	struct blkdev_object *old_obj = 
 		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
@@ -185,9 +195,8 @@ int register_device(const char* path) {
 	}
 	
 	if(S_ISBLK(ino->i_mode)) {
-		struct block_device *bdev = I_BDEV(ino);
-		if(MAJOR(bdev->bd_dev) == LOOP_MAJOR) {
-			char* loop_backing_path = get_loop_device_backing_file(bdev);
+		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
+			char* loop_backing_path = get_loop_device_backing_file(ino->i_rdev);
 			if(loop_backing_path == NULL) {
 				return -ENOBUFS;
 			}
@@ -196,7 +205,7 @@ int register_device(const char* path) {
 			kfree(loop_backing_path);
 			return err;
 		} else {
-			return try_to_insert_block_device(bdev);
+			return try_to_insert_block_device(ino->i_rdev);
 		}
 	} else if(S_ISREG(ino->i_mode)) {
 		return try_to_insert_loop_device(path);
@@ -241,11 +250,11 @@ static int try_to_remove_loop_device(const char* path) {
 	return 0;
 }
 
-static int try_to_remove_block_device(const struct block_device* bdev) {
+static int try_to_remove_block_device(dev_t bddevt) {
 	rcu_read_lock();
 
 	struct blkdev_object *cur_obj = 
-		rhashtable_lookup_fast(&blkdevs_ht, &bdev->bd_dev, blkdevs_ht_params);
+		rhashtable_lookup_fast(&blkdevs_ht, &bddevt, blkdevs_ht_params);
 		
 	if(cur_obj == NULL) {
 		rcu_read_unlock();
@@ -271,9 +280,8 @@ int unregister_device(const char* path) {
 	}
 	
 	if(S_ISBLK(ino->i_mode)) {
-		struct block_device *bdev = I_BDEV(ino);
 		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
-			char* loop_backing_path = get_loop_device_backing_file(bdev);
+			char* loop_backing_path = get_loop_device_backing_file(ino->i_rdev);
 			if(loop_backing_path == NULL) {
 				return -ENOBUFS;
 			}
@@ -282,7 +290,7 @@ int unregister_device(const char* path) {
 			kfree(loop_backing_path);
 			return err;
 		} else {
-			return try_to_remove_block_device(bdev);
+			return try_to_remove_block_device(ino->i_rdev);
 		}
 	} else if(S_ISREG(ino->i_mode)) {
 		return try_to_remove_loop_device(path);
