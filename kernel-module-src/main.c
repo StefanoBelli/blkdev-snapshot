@@ -1,9 +1,8 @@
-#include <linux/kernel.h>
 #include <linux/module.h>
 
 #include <activation.h>
 #include <devices.h>
-#include <epoch.h>
+#include <mounts.h>
 #include <supportfs.h>
 #include <pr-err-failure.h>
 
@@ -61,7 +60,7 @@ int __init init_blkdev_snapshot_module(void) {
 		END_SETUP_BLOCK;
 	}
 
-	_SETUP(epoch_mgmt) {
+	_SETUP(mounts) {
 		pr_err_setup(epoch_mgmt);
 		destroy_devices();
 		END_SETUP_BLOCK;
@@ -69,7 +68,7 @@ int __init init_blkdev_snapshot_module(void) {
 
 	_SETUP(activation_mechanism) {
 		pr_err_setup(activation_mechanism);
-		destroy_epoch_mgmt();
+		destroy_mounts();
 		destroy_devices();
 		END_SETUP_BLOCK;
 	}
@@ -85,7 +84,7 @@ int __init init_blkdev_snapshot_module(void) {
 
 void __exit exit_blkdev_snapshot_module(void) {
     destroy_activation_mechanism();
-	destroy_epoch_mgmt();
+	destroy_mounts();
 	destroy_devices();
 	destroy_supported_fs();
 }

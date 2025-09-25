@@ -51,8 +51,7 @@ struct __my_loop_device {
 
 #endif
 
-static inline char* get_loop_backing_file(const struct block_device* bdev) {
-	return ((struct __my_loop_device*)bdev->bd_disk->private_data)->lo_file_name;
-}
+#define get_loop_backing_file(bdev) \
+	(((struct __my_loop_device*)bdev->bd_disk->private_data)->lo_file_name)
 
 #endif
