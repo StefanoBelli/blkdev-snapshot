@@ -1,6 +1,4 @@
 #include <linux/list.h>
-#include <linux/slab.h>
-#include <linux/mutex.h>
 
 #include <supportfs.h>
 #include <pr-err-failure.h>

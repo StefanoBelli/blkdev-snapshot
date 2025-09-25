@@ -1,5 +1,3 @@
-#include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/cred.h>
 
 #ifndef CONFIG_SYSFS

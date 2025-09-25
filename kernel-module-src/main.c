@@ -1,5 +1,3 @@
-#include <linux/module.h>
-
 #include <activation.h>
 #include <devices.h>
 #include <mounts.h>

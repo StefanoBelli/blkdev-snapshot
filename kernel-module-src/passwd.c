@@ -1,5 +1,3 @@
-#include <linux/kernel.h>
-#include <linux/module.h>
 #include <crypto/hash.h>
 
 #include <passwd.h>
