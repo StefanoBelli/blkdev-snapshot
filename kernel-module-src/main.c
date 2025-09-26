@@ -19,9 +19,9 @@ module_param_named(actpasswd, activation_ct_passwd, charp, 0);
 #endif
 
 #warning password is cleartext-hardcoded in ko! \
-You may want to find a way to secure your .ko file \
-such that it is not possible to do any kind of analysis \
-on it (e.g. objdump)
+	You may want to find a way to secure your .ko file \
+	such that it is not possible to do any kind of analysis \
+	on it (e.g. objdump)
 
 const char* activation_ct_passwd = ACTPASSWD;
 unsigned int activation_dev_req_maj = ACTDEVREQMAJ;
@@ -46,10 +46,10 @@ void __exit exit_blkdev_snapshot_module(void);
 	pr_err_failure_with_code("setup"#name, __SETUP_RVVAR)
 
 int __init init_blkdev_snapshot_module(void) {
-    if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
-        pr_err("%s: no password was provided\n", module_name(THIS_MODULE));
-        return -ENODATA;
-    }
+	if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
+		pr_err("%s: no password was provided\n", module_name(THIS_MODULE));
+		return -ENODATA;
+	}
 
 	START_SETUP_BLOCK;
 
@@ -81,7 +81,7 @@ int __init init_blkdev_snapshot_module(void) {
 #undef pr_err_setup
 
 void __exit exit_blkdev_snapshot_module(void) {
-    destroy_activation_mechanism();
+	destroy_activation_mechanism();
 	destroy_mounts();
 	destroy_devices();
 	destroy_supported_fs();

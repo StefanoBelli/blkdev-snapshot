@@ -35,46 +35,46 @@
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,19,0)
 
 struct __my_loop_device {
-	int		unused_0;
-	loff_t	unused_1;
-	loff_t	unused_2;
-	int		unused_3;
-	char	lo_file_name[__MY_LO_NAME_SIZE];
+	int 	unused_0;
+	loff_t 	unused_1;
+	loff_t 	unused_2;
+	int 	unused_3;
+	char 	lo_file_name[__MY_LO_NAME_SIZE];
 };
 
 #elif KERNEL_VERSION(5,16,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
 
 struct __my_loop_device {
-	int			unused_0;
-	atomic_t	unused_1;
-	loff_t		unused_2;
-	loff_t		unused_3;
+	int 		unused_0;
+	atomic_t 	unused_1;
+	loff_t 		unused_2;
+	loff_t 		unused_3;
 	int 		unused_4;
-	char		lo_file_name[__MY_LO_NAME_SIZE];
+	char 		lo_file_name[__MY_LO_NAME_SIZE];
 };
 
 #elif KERNEL_VERSION(4,2,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,16,0)
 
 struct __my_loop_device {
-	int			unused_0;
-	atomic_t	unused_1;
-	loff_t		unused_2;
-	loff_t		unused_3;
-	int			unused_4;
+	int 		unused_0;
+	atomic_t 	unused_1;
+	loff_t 		unused_2;
+	loff_t 		unused_3;
+	int 		unused_4;
 	void 		*unused_5;
-	char		lo_file_name[__MY_LO_NAME_SIZE];
+	char 		lo_file_name[__MY_LO_NAME_SIZE];
 };
 
 #else
 
 struct __my_loop_device {
-	int			unused_0;
-	int     	unused_1;
-	loff_t		unused_2;
-	loff_t		unused_3;
-	int			unused_4;
+	int 		unused_0;
+	int 		unused_1;
+	loff_t 		unused_2;
+	loff_t 		unused_3;
+	int 		unused_4;
 	void 		*unused_5;
-	char		lo_file_name[__MY_LO_NAME_SIZE];
+	char 		lo_file_name[__MY_LO_NAME_SIZE];
 };
 
 #endif
