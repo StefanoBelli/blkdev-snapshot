@@ -7,6 +7,54 @@
 #include <get-loop-backing-file.h>
 
 /**
+ * 
+ * commmon across both "pure" block device and loop device
+ *
+ */
+
+// "data" should not be visible at the time of init
+static void __init_object_data(struct object_data* data, const char* wqfmt, const void *wqarg) {
+	spin_lock_init(&data->lock);
+	data->e.id_current = 0;
+	data->e.n_currently_mounted = 0;
+	data->e.cached_blocks = NULL;
+	data->e.d_snapdir = NULL;
+
+	data->wq = alloc_ordered_workqueue(wqfmt, WQ_FREEZABLE, wqarg);
+}
+
+static void init_object_data_blkdev(struct object_data* data, dev_t devt) {
+	__init_object_data(data, "bdsnap-b%d", (void*) (intptr_t) devt);
+}
+
+static void init_object_data_loop(struct object_data* data, const char* lof) {
+	__init_object_data(data, "bdsnap-l%s", lof);
+}
+
+static void __cleanup_object_data(struct object_data* data, bool locking) {
+	if(locking) {
+		spin_lock(&data->lock);
+	}
+
+	flush_workqueue(data->wq);
+	destroy_workqueue(data->wq);
+	epoch_destroy_cached_blocks_lru(data->e);
+	epoch_destroy_d_snapdir_dentry(data->e);
+	
+	if(locking) {
+		spin_unlock(&data->lock);
+	}
+}
+
+static void cleanup_object_data(struct object_data* data) {
+	__cleanup_object_data(data, true);
+}
+
+static void cleanup_object_data_nolocking(struct object_data* data) {
+	__cleanup_object_data(data, false);
+}
+
+/**
  *
  * "pure" block devices rhashtable
  *
@@ -19,6 +67,7 @@ struct blkdev_object {
 	struct rcu_head rcu;
 
 	dev_t key;
+	struct object_data value;
 };
 
 static const struct rhashtable_params blkdevs_ht_params = {
@@ -31,6 +80,7 @@ static struct rhashtable blkdevs_ht;
 
 static void blkdevs_ht_free_fn(void* ptr, void* arg) {
 	struct blkdev_object *bdptr = (struct blkdev_object*) ptr;
+	cleanup_object_data(&bdptr->value);
 	kfree_rcu(bdptr, rcu);
 }
 
@@ -45,6 +95,7 @@ struct loop_object {
 	struct rcu_head rcu;
 
 	char key[PATH_MAX + 1];
+	struct object_data value;
 };
 
 static const struct rhashtable_params loops_ht_params = {
@@ -57,6 +108,7 @@ static struct rhashtable loops_ht;
 
 static void loops_ht_free_fn(void* ptr, void* arg) {
 	struct loop_object *loptr = (struct loop_object*) ptr;
+	cleanup_object_data(&loptr->value);
 	kfree_rcu(loptr, rcu);
 }
 
@@ -202,6 +254,11 @@ static int __do_device_reging_operation(
  *
  * insertion of devices
  *
+ * context of freeing in case of rhashtable error is way different here than
+ * in "try_to_remove_*" or "rhashtable_free_and_destroy": if error occoured
+ * data is not visible to other threads - no need for RCU or anything, just
+ * free data
+ *
  */
 
 static int try_to_insert_loop_device(const char* path) {
@@ -217,14 +274,18 @@ static int try_to_insert_loop_device(const char* path) {
 		return gfpath_err;
 	}
 
+	init_object_data_loop(&new_obj->value, new_obj->key);
+
 	struct loop_object *old_obj = 
 		rhashtable_lookup_get_insert_fast(&loops_ht, &new_obj->linkage, loops_ht_params);
 	
 	if(IS_ERR(old_obj)) {
 		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
+		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
+		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
 	}
@@ -241,14 +302,18 @@ static int try_to_insert_block_device(dev_t bddevt) {
 
 	new_obj->key = bddevt;
 
+	init_object_data_blkdev(&new_obj->value, bddevt);
+
 	struct blkdev_object *old_obj = 
 		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
 		
 	if(IS_ERR(old_obj)) {
 		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
+		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
+		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
 	}
@@ -295,7 +360,7 @@ static int try_to_remove_loop_device(const char* path) {
 	}
 
 	if (rhashtable_remove_fast(&loops_ht, &cur_obj->linkage, loops_ht_params) == 0) {
-		kfree_rcu(cur_obj, rcu);
+		loops_ht_free_fn((void*)cur_obj, NULL);
 		rcu_read_unlock();
 	} else {
 		rcu_read_unlock();
@@ -317,7 +382,7 @@ static int try_to_remove_block_device(dev_t bddevt) {
 	}
 
 	if (rhashtable_remove_fast(&blkdevs_ht, &cur_obj->linkage, blkdevs_ht_params) == 0) {
-		kfree_rcu(cur_obj, rcu);
+		blkdevs_ht_free_fn((void*)cur_obj, NULL);
 		rcu_read_unlock();
 	} else {
 		rcu_read_unlock();
@@ -333,6 +398,21 @@ int unregister_device(const char* path) {
 			try_to_remove_loop_device,
 			try_to_remove_block_device);
 }
+
+/**
+ * 
+ * device lookup, needs RCU protection
+ *
+ */
+
+struct object_data *get_device_data(struct mountinfo *minfo) {
+	if(minfo->type == MOUNTINFO_DEVICE_TYPE_BLOCK) {
+		return rhashtable_lookup_fast(&blkdevs_ht, &minfo->device.bdevt, blkdevs_ht_params);
+	}
+
+	return rhashtable_lookup_fast(&loops_ht, minfo->device.lo_fname, loops_ht_params);
+}
+
 
 /**
  * 

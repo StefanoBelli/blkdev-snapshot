@@ -1,7 +1,8 @@
 #include <linux/kprobes.h>
 #include <linux/major.h>
+#include <uapi/linux/mount.h>
 
-#include <mounts.h>
+#include <epoch.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
 #error your version is not compat (reason: kretprobes hooked funcs)
@@ -67,9 +68,7 @@ static int mount_handler(struct kretprobe_instance* krp_inst, struct pt_regs* re
 		return 0;
 	}
 
-	struct mountinfo *minfo = (struct mountinfo*) krp_inst->data;
-	//device_count_mount(minfo);
-
+	epoch_count_mount((struct mountinfo*) krp_inst->data);
 	return 0;
 }
 
@@ -81,6 +80,28 @@ static int mount_handler(struct kretprobe_instance* krp_inst, struct pt_regs* re
 #define KRP_OLD_MOUNT_SYMBOL_NAME "path_mount"
 
 static int old_mount_entry_handler(struct kretprobe_instance* krp_inst, struct pt_regs* regs) {
+	struct path *path = (struct path*) regs->si;
+	unsigned long flags = regs->r10;
+
+	bool is_new_mount = 
+		!((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND)) &&
+		!(flags & MS_REMOUNT) &&
+		!(flags & MS_BIND) &&
+		!(flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE)) &&
+		!(flags & MS_MOVE);
+
+	if(!is_new_mount) {
+		return 1;
+	}
+
+	struct block_device *bdev = get_bdev_from_path(path);
+	if(bdev == NULL) {
+		return 1;
+	}
+
+	struct mountinfo *minfo = (struct mountinfo*) krp_inst->data;
+	from_block_device_to_mountinfo(minfo, bdev);
+
 	return 0;
 }
 
@@ -105,9 +126,7 @@ static int umount_handler(struct kretprobe_instance* krp_inst, struct pt_regs* r
 		return 0;
 	}
 
-	struct mountinfo *minfo = (struct mountinfo*) krp_inst->data;
-	//device_count_umount(minfo);
-
+	epoch_count_umount((struct mountinfo*) krp_inst->data);
 	return 0;
 }
 
