@@ -10,6 +10,8 @@
  *
  * "pure" block devices rhashtable
  *
+ * as a reference: https://lwn.net/Articles/751374/
+ *
  */
 
 struct blkdev_object {
@@ -101,6 +103,8 @@ static int get_inode_from_cstr_path(const char *path, struct inode **out_inode) 
 }
 
 static int get_loop_device_backing_file(dev_t bddevt, char* out_lofname) {
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,9,0)
 	struct file* f_bd = bdev_file_open_by_dev(bddevt, BLK_OPEN_READ, NULL, NULL);
 	if(IS_ERR(f_bd)) {
 		pr_err_failure_with_code("bdev_file_open_by_dev", PTR_ERR(f_bd));
@@ -108,11 +112,43 @@ static int get_loop_device_backing_file(dev_t bddevt, char* out_lofname) {
 	}
 
 	struct block_device *bd = file_bdev(f_bd);
+#elif KERNEL_VERSION(6,6,23) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,9,0)
+	struct bdev_handle *h_bd = bdev_open_by_dev(bddevt, BLK_OPEN_READ, NULL, NULL);
+	if(IS_ERR(h_bd)) {
+		pr_err_failure_with_code("bdev_open_by_dev", PTR_ERR(h_bd));
+		return PTR_ERR(h_bd);
+	}
+
+	struct block_device *bd = h_bd->bdev;
+#elif KERNEL_VERSION(6,5,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,6,23)
+	struct block_device *bd = blkdev_get_by_dev(bddevt, BLK_OPEN_READ, NULL, NULL);
+	if(IS_ERR(bd)) {
+		pr_err_failure_with_code("blkdev_get_by_dev", PTR_ERR(bd));
+		return PTR_ERR(bd);
+	}
+#elif KERNEL_VERSION(2,6,38) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,5,0)
+	struct block_device *bd = blkdev_get_by_dev(bddevt, FMODE_READ, NULL);
+	if(IS_ERR(bd)) {
+		pr_err_failure_with_code("blkdev_get_by_dev", PTR_ERR(bd));
+		return PTR_ERR(bd);
+	}
+#else
+	return -ENOSYS;
+#endif
 
 	const char* bkfile = get_loop_backing_file(bd);
 	memcpy(out_lofname, bkfile, __MY_LO_NAME_SIZE);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,9,0)
 	bdev_fput(f_bd);
+#elif KERNEL_VERSION(6,6,23) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,9,0)
+	bdev_release(h_bd);
+#elif KERNEL_VERSION(6,5,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,6,23)
+	blkdev_put(bd, NULL);
+#else
+	blkdev_put(bd, FMODE_READ);
+#endif
+
 	return 0;
 }
 
@@ -148,8 +184,6 @@ static int __do_device_reging_operation(
 			err = get_loop_device_backing_file(ino->i_rdev, loop_backing_path);
 			if(err == 0) {
 				err = op_on_loopdev(loop_backing_path);
-			} else {
-				err = -ENOBUFS;
 			}
 		} else {
 			err = op_on_blkdev(ino->i_rdev);
