@@ -13,9 +13,11 @@ struct epoch {
 };
 
 struct object_data {
-	struct epoch e;
+	bool wq_is_destroyed;
+	spinlock_t general_lock;
+	spinlock_t wq_destroy_lock;
 	struct workqueue_struct *wq;
-	spinlock_t lock;
+	struct epoch e;
 };
 
 /**
@@ -26,7 +28,8 @@ void destroy_devices(void);
 int register_device(const char*);
 int unregister_device(const char*);
 
-// protect with rcu_read_lock() and rcu_read_unlock()
-struct object_data *get_device_data(const struct mountinfo*);
+// --> !!wrap with rcu_read_lock/rcu_read_unlock!!
+//"always" does not consider mounting status, only if it is recorded
+struct object_data *get_device_data_always(const struct mountinfo*);
 
 #endif

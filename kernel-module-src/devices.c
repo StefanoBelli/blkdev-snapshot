@@ -14,13 +14,15 @@
 
 // "data" should not be visible at the time of init
 static void __init_object_data(struct object_data* data, const char* wqfmt, const void *wqarg) {
-	spin_lock_init(&data->lock);
+	spin_lock_init(&data->general_lock);
+	spin_lock_init(&data->wq_destroy_lock);
 
 	data->e.n_currently_mounted = 0;
 	data->e.cached_blocks = NULL;
 	data->e.d_snapdir = NULL;
 
 	data->wq = alloc_ordered_workqueue(wqfmt, WQ_FREEZABLE, wqarg);
+	data->wq_is_destroyed = false;
 }
 
 static void init_object_data_blkdev(struct object_data* data, dev_t devt) {
@@ -31,19 +33,51 @@ static void init_object_data_loop(struct object_data* data, const char* lof) {
 	__init_object_data(data, "bdsnap-l%s", lof);
 }
 
+//this is called only once:
+// - when module is unloaded, so rhashtable_free_and_destroy triggers the "freefn"
+// - when user deactivates snapshot for a device
+// - when we're unable to "insert device" and we need to cleanup (no locking as
+//   in this case, object_data is not visible in any way to other thrs)
+// - the wq_destroy_lock can be held by the thread which execution path falls in
+//   either the first or the second point (see above) or by the fs-implementor kprobe,
+//   where the lock is taken prior the queue_work.
+//
+//   if(!data->wq_is_destroyed && !spin_is_locked(&data->wq_destroy_lock)) {
+//   	spin_lock_*(&data->wq_destroy_lock);
+//   	if(!data->wq_is_destroyed) {
+//   		queue_work(...);
+//   	}
+//   	spin_unlock_*(&data->wq_destroy_lock);
+//   }
 static void __cleanup_object_data(struct object_data* data, bool locking) {
 	if(locking) {
-		spin_lock(&data->lock);
+		spin_lock(&data->general_lock);
+		spin_lock(&data->wq_destroy_lock);
 	}
 
 	flush_workqueue(data->wq);
 	destroy_workqueue(data->wq);
 
-	//epoch_destroy_cached_blocks_lru(data->e);
-	//epoch_destroy_d_snapdir_dentry(data->e);
-	
+	data->wq_is_destroyed = true;
+
 	if(locking) {
-		spin_unlock(&data->lock);
+		spin_unlock(&data->wq_destroy_lock);
+	}
+
+	//previous epochs are cleanup by deferred work (see flush_workqueue above)
+	//if *THIS* epoch is still alive then it will be cleanup by deferred work
+	//or by this thread (code follows)
+	if(data->e.d_snapdir != NULL) {
+		dput(data->e.d_snapdir);
+	}
+
+	if(data->e.cached_blocks != NULL) {
+		list_lru_destroy(data->e.cached_blocks);
+		kfree(data->e.cached_blocks);
+	}
+
+	if(locking) {
+		spin_unlock(&data->general_lock);
 	}
 }
 
@@ -406,12 +440,18 @@ int unregister_device(const char* path) {
  *
  */
 
-struct object_data *get_device_data(const struct mountinfo *minfo) {
+struct object_data *get_device_data_always(const struct mountinfo *minfo) {
 	if(minfo->type == MOUNTINFO_DEVICE_TYPE_BLOCK) {
-		return rhashtable_lookup_fast(&blkdevs_ht, &minfo->device.bdevt, blkdevs_ht_params);
+		struct blkdev_object *bo = 
+			rhashtable_lookup_fast(&blkdevs_ht, &minfo->device.bdevt, blkdevs_ht_params);
+
+		return &bo->value;
 	}
 
-	return rhashtable_lookup_fast(&loops_ht, minfo->device.lo_fname, loops_ht_params);
+	struct loop_object *lo = 
+		rhashtable_lookup_fast(&loops_ht, minfo->device.lo_fname, loops_ht_params);
+
+	return &lo->value;
 }
 
 

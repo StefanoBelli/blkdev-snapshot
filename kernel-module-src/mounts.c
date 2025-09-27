@@ -12,9 +12,31 @@
 
 /**
  *
- * mount events refcounting
+ * mount events counting
  *
  */
+
+struct finish_epoch_work {
+	struct work_struct work;
+	struct dentry *dent;
+	struct list_lru *lru;
+};
+
+static void cleanup_epoch_work(struct work_struct *work) {
+	struct finish_epoch_work *few = 
+		container_of(work, struct finish_epoch_work, work);
+
+	if(few->dent != NULL) {
+		dput(few->dent);
+	}
+
+	if(few->lru != NULL) {
+		list_lru_destroy(few->lru);
+		kfree(few->lru);
+	}
+
+	kfree(few);
+}
 
 static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 	epoch->n_currently_mounted++;
@@ -22,7 +44,7 @@ static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 	if(epoch->n_currently_mounted == 1) {
 		//new epoch starts
 		//record date
-		//reset ptrs as struct epoch is unique per-device
+		//initialization is performed in deferred work by the first worker
 	}
 }
 
@@ -30,30 +52,49 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 	epoch->n_currently_mounted--;
 
 	if(epoch->n_currently_mounted < 0) {
+		//this is a bug (?)
 		epoch->n_currently_mounted = 0;
 	} else if(epoch->n_currently_mounted == 0) {
 		struct object_data *data = 
 			container_of(epoch, struct object_data, e);
 
-		//queue_work(data->wq, &work);
+		struct dentry *saved_dent = data->e.d_snapdir;
+		struct list_lru *saved_lru = data->e.cached_blocks;
+
+		data->e.d_snapdir = NULL;
+		data->e.cached_blocks = NULL;
+
+		//we hold the general lock, at this time the wq can be destroyed or not
+		//but nothing can happen while we have the lock
+		if(!data->wq_is_destroyed) {
+			struct finish_epoch_work *few = (struct finish_epoch_work*) 
+				kmalloc(sizeof(struct finish_epoch_work), GFP_ATOMIC);
+
+			if(few != NULL) {
+				few->dent = saved_dent;
+				few->lru = saved_lru;
+
+				INIT_WORK(&few->work, cleanup_epoch_work);
+				queue_work(data->wq, &few->work);
+			}
+		}
 	}
 }
 
 static void __do_epoch_event_count(const struct mountinfo* minfo, void (*cb)(struct epoch*)) {
 	rcu_read_lock();
 
-	struct object_data *data = get_device_data(minfo);
+	struct object_data *data = get_device_data_always(minfo);
 	if(data == NULL) {
 		rcu_read_unlock();
 		return;
 	}
 
 	unsigned long flags; //cpu-saved flags
-	spin_lock_irqsave(&data->lock, flags);
-
+	spin_lock_irqsave(&data->general_lock, flags);
 	cb(&data->e);
+	spin_unlock_irqrestore(&data->general_lock, flags);
 
-	spin_unlock_irqrestore(&data->lock, flags);
 	rcu_read_unlock();
 }
 
@@ -97,9 +138,11 @@ static inline void from_block_device_to_mountinfo(
 }
 
 /*
+ *
  * new mount op probe callbacks
  * (starting from kernel version 5.2.0, 
  * mount userspace utility uses this since ???)
+ *
  */
 
 #define KRP_NEW_MOUNT_SYMBOL_NAME "do_move_mount"
@@ -136,8 +179,10 @@ static int mount_handler(struct kretprobe_instance* krp_inst, struct pt_regs* re
 }
 
 /*
- * old mount op probe callbacks
+ *
+ * old mount op probe callbacks, exit handler above
  * (starting from kernel version 5.9.0)
+ *
  */
 
 #define KRP_OLD_MOUNT_SYMBOL_NAME "path_mount"
@@ -169,8 +214,10 @@ static int old_mount_entry_handler(struct kretprobe_instance* krp_inst, struct p
 }
 
 /* 
+ *
  * umount op probe callbacks
  * (starting from kernel version 5.9.0)
+ *
  */
 
 #define KRP_UMOUNT_SYMBOL_NAME "path_umount"
@@ -194,12 +241,14 @@ static int umount_handler(struct kretprobe_instance* krp_inst, struct pt_regs* r
 }
 
 /* 
+ *
  * kretprobes 
  *
  * either one of krp_new_mount or krp_old_mount will be probed
  * according to the userspace mount utility (or whatever is
  * responsible to initiate mount operation via some kernel 
  * system calls)
+ *
  */
 
 static struct kretprobe krp_new_mount = {
@@ -227,7 +276,9 @@ static struct kretprobe krp_umount = {
 };
 
 /*
+ *
  * which kretprobes to register and setup/destroy funcs
+ *
  */
 
 static struct kretprobe *krps_to_register[] = {
