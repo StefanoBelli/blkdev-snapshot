@@ -1,7 +1,6 @@
 #include <activation.h>
 #include <devices.h>
 #include <mounts.h>
-#include <supportfs.h>
 #include <pr-err-failure.h>
 
 
@@ -84,7 +83,6 @@ void __exit exit_blkdev_snapshot_module(void) {
 	destroy_activation_mechanism();
 	destroy_mounts();
 	destroy_devices();
-	destroy_supported_fs();
 }
 
 module_init(init_blkdev_snapshot_module);

@@ -6,6 +6,8 @@
 #include <pr-err-failure.h>
 #include <get-loop-backing-file.h>
 
+#define __unused __attribute__((__unused__))
+
 /**
  * 
  * commmon across both "pure" block device and loop device
@@ -13,24 +15,45 @@
  */
 
 // "data" should not be visible at the time of init
-static void __init_object_data(struct object_data* data, const char* wqfmt, const void *wqarg) {
+static void __init_object_data(
+		struct object_data* data, 
+		const char* original_dev_name, 
+		const char* wqfmt, 
+		const void *wqarg) {
+
 	spin_lock_init(&data->general_lock);
 	spin_lock_init(&data->wq_destroy_lock);
 
+	//ensuring fields inited to 0 (independent of allocation way)
 	data->e.n_currently_mounted = 0;
 	data->e.cached_blocks = NULL;
 	data->e.d_snapdir = NULL;
+	data->e.first_mount_date[MNT_FMT_DATE_LEN] = 0;
+
+	strscpy(data->original_dev_name, original_dev_name, PATH_MAX);
 
 	data->wq = alloc_ordered_workqueue(wqfmt, WQ_FREEZABLE, wqarg);
 	data->wq_is_destroyed = false;
 }
 
-static void init_object_data_blkdev(struct object_data* data, dev_t devt) {
-	__init_object_data(data, "bdsnap-b%d", (void*) (intptr_t) devt);
+static void init_object_data_blkdev(
+		struct object_data* data, 
+		dev_t devt, 
+		const char* original_dev_name) {
+
+	__init_object_data(
+			data, original_dev_name, 
+			"bdsnap-b%d", (void*) (intptr_t) devt);
 }
 
-static void init_object_data_loop(struct object_data* data, const char* lof) {
-	__init_object_data(data, "bdsnap-l%s", lof);
+static void init_object_data_loop(
+		struct object_data* data, 
+		const char* lof, 
+		const char* original_dev_name) {
+
+	__init_object_data(
+			data, original_dev_name, 
+			"bdsnap-l%s", lof);
 }
 
 //this is called only once:
@@ -69,11 +92,13 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 	//or by this thread (code follows)
 	if(data->e.d_snapdir != NULL) {
 		dput(data->e.d_snapdir);
+		data->e.d_snapdir = NULL;
 	}
 
 	if(data->e.cached_blocks != NULL) {
 		list_lru_destroy(data->e.cached_blocks);
 		kfree(data->e.cached_blocks);
+		data->e.cached_blocks = NULL;
 	}
 
 	if(locking) {
@@ -113,7 +138,7 @@ static const struct rhashtable_params blkdevs_ht_params = {
 
 static struct rhashtable blkdevs_ht;
 
-static void blkdevs_ht_free_fn(void* ptr, void* arg) {
+static void blkdevs_ht_free_fn(void* ptr, void* __unused arg) {
 	struct blkdev_object *bdptr = (struct blkdev_object*) ptr;
 	cleanup_object_data(&bdptr->value);
 	kfree_rcu(bdptr, rcu);
@@ -141,7 +166,7 @@ static const struct rhashtable_params loops_ht_params = {
 
 static struct rhashtable loops_ht;
 
-static void loops_ht_free_fn(void* ptr, void* arg) {
+static void loops_ht_free_fn(void* ptr, void* __unused arg) {
 	struct loop_object *loptr = (struct loop_object*) ptr;
 	cleanup_object_data(&loptr->value);
 	kfree_rcu(loptr, rcu);
@@ -249,8 +274,8 @@ static int get_loop_device_backing_file(dev_t bddevt, char* out_lofname) {
 
 static int __do_device_reging_operation(
 		const char* path, 
-		int (*op_on_loopdev)(const char*), 
-		int (*op_on_blkdev)(dev_t)) {
+		int (*op_on_loopdev)(const char*, const char*), 
+		int (*op_on_blkdev)(dev_t, const char*)) {
 
 	struct inode *ino;
 	int err = get_inode_from_cstr_path(path, &ino);
@@ -270,13 +295,13 @@ static int __do_device_reging_operation(
 
 			err = get_loop_device_backing_file(ino->i_rdev, loop_backing_path);
 			if(err == 0) {
-				err = op_on_loopdev(loop_backing_path);
+				err = op_on_loopdev(loop_backing_path, path);
 			}
 		} else {
-			err = op_on_blkdev(ino->i_rdev);
+			err = op_on_blkdev(ino->i_rdev, path);
 		}
 	} else if(S_ISREG(ino->i_mode)) {
-		err = op_on_loopdev(path);
+		err = op_on_loopdev(path, path);
 	} else {
 		err = -EINVAL;
 	}
@@ -296,7 +321,7 @@ static int __do_device_reging_operation(
  *
  */
 
-static int try_to_insert_loop_device(const char* path) {
+static int try_to_insert_loop_device(const char* path, const char* original_dev_name) {
 	struct loop_object *new_obj = kzalloc(sizeof(struct loop_object), GFP_KERNEL);
 	if(new_obj == NULL) {
 		pr_err_failure("kzalloc");
@@ -309,7 +334,7 @@ static int try_to_insert_loop_device(const char* path) {
 		return gfpath_err;
 	}
 
-	init_object_data_loop(&new_obj->value, new_obj->key);
+	init_object_data_loop(&new_obj->value, new_obj->key, original_dev_name);
 
 	struct loop_object *old_obj = 
 		rhashtable_lookup_get_insert_fast(&loops_ht, &new_obj->linkage, loops_ht_params);
@@ -328,7 +353,7 @@ static int try_to_insert_loop_device(const char* path) {
 	return 0;
 }
 
-static int try_to_insert_block_device(dev_t bddevt) {
+static int try_to_insert_block_device(dev_t bddevt, const char* original_dev_name) {
 	struct blkdev_object *new_obj = kzalloc(sizeof(struct blkdev_object), GFP_KERNEL);
 	if(new_obj == NULL) {
 		pr_err_failure("kzalloc");
@@ -337,7 +362,7 @@ static int try_to_insert_block_device(dev_t bddevt) {
 
 	new_obj->key = bddevt;
 
-	init_object_data_blkdev(&new_obj->value, bddevt);
+	init_object_data_blkdev(&new_obj->value, bddevt, original_dev_name);
 
 	struct blkdev_object *old_obj = 
 		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
@@ -369,7 +394,9 @@ int register_device(const char* path) {
  *
  */
 
-static int try_to_remove_loop_device(const char* path) {
+static int try_to_remove_loop_device(
+		const char* path, const char* __unused arg) {
+
 	char *full_path = (char*) kzalloc(sizeof(char) * (PATH_MAX + 1), GFP_KERNEL);
 	if(full_path == NULL) {
 		pr_err_failure("kzalloc");
@@ -405,7 +432,9 @@ static int try_to_remove_loop_device(const char* path) {
 	return 0;
 }
 
-static int try_to_remove_block_device(dev_t bddevt) {
+static int try_to_remove_block_device(
+		dev_t bddevt, const char* __unused arg) {
+
 	rcu_read_lock();
 
 	struct blkdev_object *cur_obj = 

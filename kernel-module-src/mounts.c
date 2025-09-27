@@ -1,6 +1,8 @@
 #include <linux/version.h>
 #include <linux/kprobes.h>
 #include <linux/major.h>
+#include <linux/time.h>
+#include <linux/timekeeping.h>
 #include <uapi/linux/mount.h>
 
 #include <mounts.h>
@@ -42,9 +44,24 @@ static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 	epoch->n_currently_mounted++;
 
 	if(epoch->n_currently_mounted == 1) {
-		//new epoch starts
-		//record date
-		//initialization is performed in deferred work by the first worker
+		struct timespec64 ts;
+    	struct tm tm;
+
+    	ktime_get_real_ts64(&ts);
+    	time64_to_tm(ts.tv_sec, 0, &tm);
+
+		snprintf(
+				epoch->first_mount_date, 
+				MNT_FMT_DATE_LEN, 
+				"-%04ld-%02d-%02d_%02d:%02d:%02d", 
+
+				tm.tm_year + 1900, 
+				tm.tm_mon + 1, 
+				tm.tm_mday, 
+				tm.tm_hour, 
+				tm.tm_min, 
+				tm.tm_sec
+		);
 	}
 }
 

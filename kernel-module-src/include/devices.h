@@ -6,8 +6,11 @@
 
 #include <mounts.h>
 
+#define MNT_FMT_DATE_LEN sizeof("-9999-12-31_23:59:59")
+
 struct epoch {
 	int n_currently_mounted;
+	char first_mount_date[MNT_FMT_DATE_LEN + 1];
 	struct dentry *d_snapdir;
 	struct list_lru *cached_blocks;
 };
@@ -18,6 +21,7 @@ struct object_data {
 	spinlock_t wq_destroy_lock;
 	struct workqueue_struct *wq;
 	struct epoch e;
+	char original_dev_name[PATH_MAX];
 };
 
 /**
