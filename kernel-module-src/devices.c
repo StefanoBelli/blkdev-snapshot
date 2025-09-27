@@ -154,7 +154,7 @@ struct loop_object {
 	struct rhash_head linkage;
 	struct rcu_head rcu;
 
-	char key[PATH_MAX + 1];
+	char key[PATH_MAX];
 	struct object_data value;
 };
 
@@ -249,7 +249,7 @@ static int get_loop_device_backing_file(dev_t bddevt, char* out_lofname) {
 #endif
 
 	const char* bkfile = get_loop_backing_file(bd);
-	memcpy(out_lofname, bkfile, __MY_LO_NAME_SIZE);
+	strscpy(out_lofname, bkfile, __MY_LO_NAME_SIZE);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,9,0)
 	bdev_fput(f_bd);
@@ -290,8 +290,7 @@ static int __do_device_reging_operation(
 
 	if(S_ISBLK(ino->i_mode)) {
 		if(MAJOR(ino->i_rdev) == LOOP_MAJOR) {
-			char loop_backing_path[__MY_LO_NAME_SIZE + 1];
-			loop_backing_path[__MY_LO_NAME_SIZE] = 0;
+			char loop_backing_path[__MY_LO_NAME_SIZE];
 
 			err = get_loop_device_backing_file(ino->i_rdev, loop_backing_path);
 			if(err == 0) {
@@ -397,9 +396,10 @@ int register_device(const char* path) {
 static int try_to_remove_loop_device(
 		const char* path, const char* __unused arg) {
 
-	char *full_path = (char*) kzalloc(sizeof(char) * (PATH_MAX + 1), GFP_KERNEL);
+	//PATH_MAX is too big for the stack
+	char *full_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 	if(full_path == NULL) {
-		pr_err_failure("kzalloc");
+		pr_err_failure("kmalloc");
 		return -ENOMEM;
 	}
 
