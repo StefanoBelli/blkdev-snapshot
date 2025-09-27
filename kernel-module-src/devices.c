@@ -15,7 +15,7 @@
 // "data" should not be visible at the time of init
 static void __init_object_data(struct object_data* data, const char* wqfmt, const void *wqarg) {
 	spin_lock_init(&data->lock);
-	data->e.id_current = 0;
+
 	data->e.n_currently_mounted = 0;
 	data->e.cached_blocks = NULL;
 	data->e.d_snapdir = NULL;
@@ -38,8 +38,9 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 
 	flush_workqueue(data->wq);
 	destroy_workqueue(data->wq);
-	epoch_destroy_cached_blocks_lru(data->e);
-	epoch_destroy_d_snapdir_dentry(data->e);
+
+	//epoch_destroy_cached_blocks_lru(data->e);
+	//epoch_destroy_d_snapdir_dentry(data->e);
 	
 	if(locking) {
 		spin_unlock(&data->lock);
@@ -405,7 +406,7 @@ int unregister_device(const char* path) {
  *
  */
 
-struct object_data *get_device_data(struct mountinfo *minfo) {
+struct object_data *get_device_data(const struct mountinfo *minfo) {
 	if(minfo->type == MOUNTINFO_DEVICE_TYPE_BLOCK) {
 		return rhashtable_lookup_fast(&blkdevs_ht, &minfo->device.bdevt, blkdevs_ht_params);
 	}

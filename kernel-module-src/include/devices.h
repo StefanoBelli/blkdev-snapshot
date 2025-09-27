@@ -5,14 +5,18 @@
 #include <linux/workqueue.h>
 
 #include <mounts.h>
-#include <epoch.h>
+
+struct epoch {
+	int n_currently_mounted;
+	struct dentry *d_snapdir;
+	struct list_lru *cached_blocks;
+};
 
 struct object_data {
 	struct epoch e;
 	struct workqueue_struct *wq;
 	spinlock_t lock;
 };
-
 
 /**
  * Each of these calls in process context
@@ -23,6 +27,6 @@ int register_device(const char*);
 int unregister_device(const char*);
 
 // protect with rcu_read_lock() and rcu_read_unlock()
-struct object_data *get_device_data(struct mountinfo*);
+struct object_data *get_device_data(const struct mountinfo*);
 
 #endif

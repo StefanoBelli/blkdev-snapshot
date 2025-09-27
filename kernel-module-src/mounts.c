@@ -1,12 +1,75 @@
+#include <linux/version.h>
 #include <linux/kprobes.h>
 #include <linux/major.h>
 #include <uapi/linux/mount.h>
 
-#include <epoch.h>
+#include <mounts.h>
+#include <devices.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
 #error your version is not compat (reason: kretprobes hooked funcs)
 #endif
+
+/**
+ *
+ * mount events refcounting
+ *
+ */
+
+static void __epoch_event_cb_count_mount(struct epoch* epoch) {
+	epoch->n_currently_mounted++;
+
+	if(epoch->n_currently_mounted == 1) {
+		//new epoch starts
+		//record date
+		//reset ptrs as struct epoch is unique per-device
+	}
+}
+
+static void __epoch_event_cb_count_umount(struct epoch* epoch) {
+	epoch->n_currently_mounted--;
+
+	if(epoch->n_currently_mounted < 0) {
+		epoch->n_currently_mounted = 0;
+	} else if(epoch->n_currently_mounted == 0) {
+		struct object_data *data = 
+			container_of(epoch, struct object_data, e);
+
+		//queue_work(data->wq, &work);
+	}
+}
+
+static void __do_epoch_event_count(const struct mountinfo* minfo, void (*cb)(struct epoch*)) {
+	rcu_read_lock();
+
+	struct object_data *data = get_device_data(minfo);
+	if(data == NULL) {
+		rcu_read_unlock();
+		return;
+	}
+
+	unsigned long flags; //cpu-saved flags
+	spin_lock_irqsave(&data->lock, flags);
+
+	cb(&data->e);
+
+	spin_unlock_irqrestore(&data->lock, flags);
+	rcu_read_unlock();
+}
+
+static inline void epoch_count_mount(const struct mountinfo *minfo) {
+	__do_epoch_event_count(minfo, __epoch_event_cb_count_mount);
+}
+
+static inline void epoch_count_umount(const struct mountinfo *minfo) {
+	__do_epoch_event_count(minfo, __epoch_event_cb_count_umount);
+}
+
+/**
+ * 
+ * utils
+ *
+ */
 
 static inline struct block_device *get_bdev_from_path(const struct path *path) {
 	struct block_device *bdev;
