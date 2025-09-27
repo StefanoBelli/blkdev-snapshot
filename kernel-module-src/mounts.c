@@ -150,7 +150,7 @@ static inline void from_block_device_to_mountinfo(
 
 	if(mountinfo->type == MOUNTINFO_DEVICE_TYPE_LOOP) {
 		char* lbf_ptr = get_loop_backing_file(bdev);
-		memcpy(mountinfo->device.lo_fname, lbf_ptr, __MY_LO_NAME_SIZE);
+		strscpy(mountinfo->device.lo_fname, lbf_ptr, __MY_LO_NAME_SIZE);
 	}
 }
 
