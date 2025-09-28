@@ -6,6 +6,7 @@
 
 #include <mounts.h>
 #include <devices.h>
+#include <lru.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
 #error your version is not compat (reason: kretprobes hooked funcs)
@@ -32,6 +33,7 @@ static void cleanup_epoch_work(struct work_struct *work) {
 	}
 
 	if(few->lru != NULL) {
+		destroy_all_elems_in_lru(few->lru);
 		list_lru_destroy(few->lru);
 		kfree(few->lru);
 	}
