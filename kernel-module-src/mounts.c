@@ -1,6 +1,5 @@
 #include <linux/version.h>
 #include <linux/kprobes.h>
-#include <linux/major.h>
 #include <linux/time.h>
 #include <linux/timekeeping.h>
 #include <uapi/linux/mount.h>
@@ -70,6 +69,8 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 
 	if(epoch->n_currently_mounted < 0) {
 		//this is a bug (?)
+		//OR, this can happen if when activate_snapshot 
+		//the device is already mounted somewhere
 		epoch->n_currently_mounted = 0;
 	} else if(epoch->n_currently_mounted == 0) {
 		struct object_data *data = 
@@ -92,7 +93,11 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 				few->lru = saved_lru;
 
 				INIT_WORK(&few->work, cleanup_epoch_work);
+				
+				unsigned long flags; //cpu-saved flags
+				spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
 				queue_work(data->wq, &few->work);
+				spin_unlock_irqrestore(&data->cleanup_epoch_lock, flags);
 			}
 		}
 	}
@@ -139,19 +144,6 @@ static inline struct block_device *get_bdev_from_path(const struct path *path) {
 	}
 
 	return bdev;
-}
-
-static inline void from_block_device_to_mountinfo(
-		struct mountinfo *mountinfo,
-		const struct block_device* bdev) {
-
-	mountinfo->device.bdevt = bdev->bd_dev;
-	mountinfo->type = MAJOR(bdev->bd_dev) == LOOP_MAJOR;
-
-	if(mountinfo->type == MOUNTINFO_DEVICE_TYPE_LOOP) {
-		char* lbf_ptr = get_loop_backing_file(bdev);
-		strscpy(mountinfo->device.lo_fname, lbf_ptr, __MY_LO_NAME_SIZE);
-	}
 }
 
 /*

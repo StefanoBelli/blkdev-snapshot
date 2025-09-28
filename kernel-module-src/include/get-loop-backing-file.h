@@ -21,10 +21,6 @@
 #include <linux/blkdev.h>
 #endif
 
-//this include is probably not needed, just to be sure that
-//loff_t and atomic_t are ok across all versions
-#include <linux/types.h>
-
 // cannot do direct offset calculation since compiler can apply
 // padding on structs
 

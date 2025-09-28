@@ -1,6 +1,5 @@
 #include <linux/rhashtable.h>
 #include <linux/namei.h>
-#include <linux/major.h>
 
 #include <devices.h>
 #include <pr-err-failure.h>
@@ -23,6 +22,7 @@ static void __init_object_data(
 
 	spin_lock_init(&data->general_lock);
 	spin_lock_init(&data->wq_destroy_lock);
+	spin_lock_init(&data->cleanup_epoch_lock);
 
 	//ensuring fields inited to 0 (independent of allocation way)
 	data->e.n_currently_mounted = 0;
@@ -61,17 +61,6 @@ static void init_object_data_loop(
 // - when user deactivates snapshot for a device
 // - when we're unable to "insert device" and we need to cleanup (no locking as
 //   in this case, object_data is not visible in any way to other thrs)
-// - the wq_destroy_lock can be held by the thread which execution path falls in
-//   either the first or the second point (see above) or by the fs-implementor kprobe,
-//   where the lock is taken prior the queue_work.
-//
-//   if(!data->wq_is_destroyed && !spin_is_locked(&data->wq_destroy_lock)) {
-//   	spin_lock_*(&data->wq_destroy_lock);
-//   	if(!data->wq_is_destroyed) {
-//   		queue_work(...);
-//   	}
-//   	spin_unlock_*(&data->wq_destroy_lock);
-//   }
 static void __cleanup_object_data(struct object_data* data, bool locking) {
 	if(locking) {
 		spin_lock(&data->general_lock);
@@ -469,18 +458,34 @@ int unregister_device(const char* path) {
  *
  */
 
-struct object_data *get_device_data_always(const struct mountinfo *minfo) {
-	if(minfo->type == MOUNTINFO_DEVICE_TYPE_BLOCK) {
+static struct object_data *__do_get_device_data_always(const void* key, bool is_block) {
+	if(is_block) {
 		struct blkdev_object *bo = 
-			rhashtable_lookup_fast(&blkdevs_ht, &minfo->device.bdevt, blkdevs_ht_params);
+			rhashtable_lookup_fast(&blkdevs_ht, key, blkdevs_ht_params);
+
+		if(bo == NULL) {
+			return NULL;
+		}
 
 		return &bo->value;
 	}
 
 	struct loop_object *lo = 
-		rhashtable_lookup_fast(&loops_ht, minfo->device.lo_fname, loops_ht_params);
+		rhashtable_lookup_fast(&loops_ht, key, loops_ht_params);
+
+	if(lo == NULL) {
+		return NULL;
+	}
 
 	return &lo->value;
+}
+
+struct object_data *get_device_data_always(const struct mountinfo *minfo) {
+	if(minfo->type == MOUNTINFO_DEVICE_TYPE_BLOCK) {
+		return __do_get_device_data_always(&minfo->device.bdevt, true);
+	}
+
+	return __do_get_device_data_always(minfo->device.lo_fname, false);
 }
 
 
