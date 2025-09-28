@@ -1,26 +1,42 @@
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include <lru.h>
+
+typedef bool (*llru_op_fpt)(struct list_lru*, struct list_head*);
+
+//this is because of introduction of NUMA-aware list_lru in v6.8.0
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,8,0)
+llru_op_fpt llru_add = list_lru_add_obj;
+llru_op_fpt llru_del = list_lru_del_obj;
+#elif KERNEL_VERSION(3,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,8,0)
+llru_op_fpt llru_add = list_lru_add;
+llru_op_fpt llru_del = list_lru_del;
+#else
+#error unsupported kernel version (missing list_lru_add, list_lru_del)
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
+#define LIST_LRU_WALK_CB_ARGS struct list_head *item, struct list_lru_one *list, void *args
+#elif KERNEL_VERSION(4,0,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,13,0)
+#define LIST_LRU_WALK_CB_ARGS struct list_head *item, struct list_lru_one *list, spinlock_t *lock, void *args
+#elif KERNEL_VERSION(3,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+#define LIST_LRU_WALK_CB_ARGS struct list_head *item, spinlock_t *lock, void *args
+#else
+#error unsupported kernel version (missing typedef list_lru_walk_cb)
+#endif
 
 struct lru_node {
 	struct list_head lru;
 	sector_t blknr;
 };
 
-static enum lru_status evict_cb(
-		struct list_head *item, 
-		struct list_lru_one *list, 
-		void *args) {
-
-    //struct list_head *freeable = arg;
-
+static enum lru_status evict_cb(LIST_LRU_WALK_CB_ARGS) {
     struct lru_node *node = 
     	container_of(item, struct lru_node, lru);
 
     list_del_init(&node->lru);
     kfree(node);
-
-    //list_add(&node->lru, freeable);
 
     return LRU_REMOVED;
 }
@@ -30,18 +46,10 @@ static void enforce_lru_size_limit(struct list_lru * lru) {
     if (cnt <= NUM_MAX_LRU_ENTRIES)
         return;
 
+    //this should always be 1
     unsigned long over = cnt - NUM_MAX_LRU_ENTRIES;
-    //LIST_HEAD(freeable);
 
-    list_lru_walk(lru, evict_cb, NULL /*&freeable*/, over);
-
-    /*
-    while (!list_empty(&freeable)) {
-        struct lru_node *node = 
-        	list_first_entry(&freeable, struct lru_node, lru);
-        list_del_init(&node->lru);
-        kfree(node);
-    }*/
+    list_lru_walk(lru, evict_cb, NULL, over);
 }
 
 struct lookup_args {
@@ -49,11 +57,7 @@ struct lookup_args {
 	struct lru_node *hit_node;
 };
 
-static enum lru_status find_and_stop_cb(
-		struct list_head *item,
-		struct list_lru_one *list,
-		void *args) {
-
+static enum lru_status find_and_stop_cb(LIST_LRU_WALK_CB_ARGS) {
     struct lookup_args *lkargs = args;
     struct lru_node *node = 
     	container_of(item, struct lru_node, lru);
@@ -74,9 +78,10 @@ bool lookup_lru(struct list_lru * lru, sector_t blknr) {
 
     list_lru_walk(lru, find_and_stop_cb, &lkargs, ULONG_MAX);
 
+    //node becomes the most recently used object
     if (lkargs.hit_node != NULL) {
-        list_lru_del_obj(lru, &lkargs.hit_node->lru);
-        list_lru_add_obj(lru, &lkargs.hit_node->lru);
+        llru_del(lru, &lkargs.hit_node->lru);
+        llru_add(lru, &lkargs.hit_node->lru);
 
         return true;
     }
@@ -94,7 +99,7 @@ bool add_lru(struct list_lru * lru, sector_t blknr) {
     INIT_LIST_HEAD(&node->lru);
     node->blknr = blknr;
 
-    if(!list_lru_add_obj(lru, &node->lru)) {
+    if(!llru_add(lru, &node->lru)) {
     	kfree(node);
     	return false;
     }
@@ -105,14 +110,6 @@ bool add_lru(struct list_lru * lru, sector_t blknr) {
 }
 
 void destroy_all_elems_in_lru(struct list_lru *lru) {
-	//LIST_HEAD(elems);
 	list_lru_walk(lru, evict_cb, NULL, ULONG_MAX);
-
-	/*while (!list_empty(&elems)) {
-        struct lru_node *node = 
-        	list_first_entry(&elems, struct lru_node, lru);
-        list_del_init(&node->lru);
-        kfree(node);
-    }*/
 }
 

@@ -1,6 +1,7 @@
 #include <linux/rhashtable.h>
 #include <linux/namei.h>
 
+#include <lru.h>
 #include <devices.h>
 #include <pr-err-failure.h>
 #include <get-loop-backing-file.h>
@@ -85,6 +86,7 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 	}
 
 	if(data->e.cached_blocks != NULL) {
+		destroy_all_elems_in_lru(data->e.cached_blocks);
 		list_lru_destroy(data->e.cached_blocks);
 		kfree(data->e.cached_blocks);
 		data->e.cached_blocks = NULL;
