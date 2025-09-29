@@ -11,7 +11,7 @@
 struct epoch {
 	int n_currently_mounted;
 	char first_mount_date[MNT_FMT_DATE_LEN + 1];
-	struct dentry *d_snapdir;
+	struct path *path_snapdir;
 	struct list_lru *cached_blocks;
 };
 

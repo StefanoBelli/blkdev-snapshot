@@ -10,7 +10,7 @@ struct make_snapshot_work {
 	sector_t block_nr;
 	unsigned blocksize;
 	char* block;
-	struct dentry *d_snapdir;
+	struct path *path_snapdir;
 	struct list_lru *cached_blocks;
 	char original_dev_name[PATH_MAX];
 	char first_mount_date[MNT_FMT_DATE_LEN + 1];
@@ -57,7 +57,7 @@ static bool queue_snapshot_work(
 	INIT_WORK(&msw->work, make_snapshot);
 	msw->block_nr = blknr;
 	msw->blocksize = blksize;
-	msw->d_snapdir = obj->e.d_snapdir;
+	msw->path_snapdir = obj->e.path_snapdir;
 	msw->cached_blocks = obj->e.cached_blocks;
 	memcpy(msw->first_mount_date, obj->e.first_mount_date, MNT_FMT_DATE_LEN + 1);
 	strscpy(msw->original_dev_name, obj->original_dev_name, PATH_MAX);

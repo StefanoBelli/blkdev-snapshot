@@ -28,7 +28,7 @@ static void __init_object_data(
 	//ensuring fields inited to 0 (independent of allocation way)
 	data->e.n_currently_mounted = 0;
 	data->e.cached_blocks = NULL;
-	data->e.d_snapdir = NULL;
+	data->e.path_snapdir = NULL;
 	data->e.first_mount_date[MNT_FMT_DATE_LEN] = 0;
 
 	strscpy(data->original_dev_name, original_dev_name, PATH_MAX);
@@ -80,9 +80,9 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 	//previous epochs are cleanup by deferred work (see flush_workqueue above)
 	//if *THIS* epoch is still alive then it will be cleanup by deferred work
 	//or by this thread (code follows)
-	if(data->e.d_snapdir != NULL) {
-		dput(data->e.d_snapdir);
-		data->e.d_snapdir = NULL;
+	if(data->e.path_snapdir != NULL) {
+		path_put(data->e.path_snapdir);
+		data->e.path_snapdir = NULL;
 	}
 
 	if(data->e.cached_blocks != NULL) {

@@ -20,7 +20,7 @@
 
 struct finish_epoch_work {
 	struct work_struct work;
-	struct dentry *dent;
+	struct path *path;
 	struct list_lru *lru;
 };
 
@@ -28,8 +28,8 @@ static void cleanup_epoch_work(struct work_struct *work) {
 	struct finish_epoch_work *few = 
 		container_of(work, struct finish_epoch_work, work);
 
-	if(few->dent != NULL) {
-		dput(few->dent);
+	if(few->path != NULL) {
+		path_put(few->path);
 	}
 
 	if(few->lru != NULL) {
@@ -78,10 +78,10 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 		struct object_data *data = 
 			container_of(epoch, struct object_data, e);
 
-		struct dentry *saved_dent = data->e.d_snapdir;
+		struct path *saved_path = data->e.path_snapdir;
 		struct list_lru *saved_lru = data->e.cached_blocks;
 
-		data->e.d_snapdir = NULL;
+		data->e.path_snapdir = NULL;
 		data->e.cached_blocks = NULL;
 
 		//we hold the general lock, at this time the wq can be destroyed or not
@@ -91,7 +91,7 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 				kmalloc(sizeof(struct finish_epoch_work), GFP_ATOMIC);
 
 			if(few != NULL) {
-				few->dent = saved_dent;
+				few->path = saved_path;
 				few->lru = saved_lru;
 
 				INIT_WORK(&few->work, cleanup_epoch_work);
