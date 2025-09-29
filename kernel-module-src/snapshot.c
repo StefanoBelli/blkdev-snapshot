@@ -1,9 +1,10 @@
+#include "linux/dcache.h"
 #include <linux/namei.h>
-#include <linux/dcache.h>
 
 #include <bdsnap/bdsnap.h>
 
 #include <devices.h>
+#include <lru.h>
 
 /**
  * 
@@ -76,7 +77,7 @@ static bool init_path_snapdir(struct path **path_snapdir, const char *snap_subdi
 	return true;
 }
 
-static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* subdirname) {
+static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devname, const char* mountdate) {
 	if(likely(*path_snapdir != NULL)) {
 		struct dentry *dent = (*path_snapdir)->dentry;
 		if(likely(d_is_positive(dent) && d_is_dir(dent))) {
@@ -96,9 +97,14 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* subdi
 		path_put(*path_snapdir);
 		*path_snapdir = NULL;
 
-		return ensure_path_snapdir_ok(path_snapdir, subdirname);
+		return ensure_path_snapdir_ok(path_snapdir, devname, mountdate);
 	} else {
-		return init_path_snapdir(path_snapdir, subdirname);
+		size_t subdirname_len_wnul = strlen(devname) + MNT_FMT_DATE_LEN + 1;
+		char *subdirname = kmalloc(subdirname_len_wnul, GFP_KERNEL);
+		snprintf(subdirname, subdirname_len_wnul, "%s%s", devname, mountdate);
+		bool res = init_path_snapdir(path_snapdir, subdirname);
+		kfree(subdirname);
+		return res;
 	}
 }
 
@@ -124,6 +130,11 @@ static inline bool ensure_cached_blocks_lru_ok(struct list_lru **lru) {
 	return true;
 }
 
+/**
+ *
+ * snapshot deferred work
+ *
+ */
 
 struct make_snapshot_work {
 	sector_t block_nr;
@@ -140,14 +151,40 @@ static void make_snapshot(struct work_struct *work) {
 	struct make_snapshot_work *msw_args =
 		container_of(work, struct make_snapshot_work, work);
 
-	if(!ensure_cached_blocks_lru_ok(&msw_args->cached_blocks)) {
+	if(!ensure_cached_blocks_lru_ok(
+				&msw_args->cached_blocks)) {
 		goto __make_snapshot_finish0;
 	}
 
+	if(lookup_lru(msw_args->cached_blocks, msw_args->block_nr)) {
+		goto __make_snapshot_finish0;
+	}
+
+	add_lru(msw_args->cached_blocks, msw_args->block_nr);
+
+	if(!ensure_path_snapdir_ok(
+				&msw_args->path_snapdir, 
+				msw_args->original_dev_name, 
+				msw_args->first_mount_date)) {
+		goto __make_snapshot_finish0;
+	}
+
+	struct file *fdir = dentry_open(msw_args->path_snapdir, O_RDONLY, current->cred);
+	if(IS_ERR(fdir)) {
+		goto __make_snapshot_finish0;
+	}
+
+	fput(fdir);
 __make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);
 }
+
+/**
+ *
+ * deferred work caller
+ *
+ */
 
 static bool queue_snapshot_work(
 		struct object_data *obj, const char* blk, 
