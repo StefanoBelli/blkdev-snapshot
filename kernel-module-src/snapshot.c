@@ -175,6 +175,7 @@ enum snapblock_payload_type : u64 {
 	SNAPBLOCK_PAYLOAD_TYPE_RAW,
 };
 
+//trying to have a 64-bit word memalign
 struct snapblock_file_hdr {
 	u64 magic;
 	u64 blknr;
@@ -183,7 +184,7 @@ struct snapblock_file_hdr {
 	u64 payld_off;
 } __packed;
 
-int read_snapblock_mandatory_header(struct file *filp, 
+static int read_snapblock_mandatory_header(struct file *filp, 
 		struct snapblock_file_hdr *out_hdr) {
 
 	size_t nrbytes = sizeof(struct snapblock_file_hdr);
@@ -210,11 +211,100 @@ struct snapblock_file_write_args {
 	size_t payload_size;
 };
 
+#define INIT_SNAPBLOCK_FILE_WRITE_ARGS(args, blknr, pld, pldsz) \
+	(args).extended_hdr = NULL; \
+	(args).extended_hdr_size = 0; \
+	(args).payload = (pld); \
+	(args).payload_size = (pldsz)
+	(args).mandatory_hdr.magic = SNAPBLOCK_MAGIC; \
+	(args).mandatory_hdr.blknr = (blknr); \
+	(args).mandatory_hdr.payldsiz = (pldsz); \
+	(args).mandatory_hdr.payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
+	(args).mandatory_hdr.payld_off = sizeof(struct snapblock_file_hdr)
+
+static int create_snapblock_file(u64 blknr, struct file **out_filp, const struct path *path_snapdir) {
+	char *namebuf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if(namebuf == NULL) {
+		return -ENOMEM;
+	}
+
+	snprintf(namebuf, PATH_MAX, "snapblock-%lld", blknr);
+
+	struct dentry *d_new = d_alloc_name(path_snapdir->dentry, namebuf);
+	if(d_new == NULL) {
+		kfree(namebuf);
+		return -ENODATA;
+	}
+
+	kfree(namebuf);
+
+	struct mnt_idmap *par_idmap = mnt_idmap(path_snapdir->mnt);
+	struct inode *par_ino = d_inode(path_snapdir->dentry);
+
+	int err = vfs_create(par_idmap, par_ino, d_new, FMODE_READ, true);
+	if(err != 0) {
+		return -ECHILD;
+	}
+
+	struct path path_new_snapblock = {
+		.dentry = d_new,
+		.mnt = path_snapdir->mnt
+	};
+
+	*out_filp = dentry_open(&path_new_snapblock, O_RDONLY, current->cred);
+	if(IS_ERR(*out_filp)) {
+		return -EACCES;
+	}
+
+	return 0;
+}
+
 // extended_header{,_size} can be NULL/0 (optional)
 // it is client code responsibility to fill the mandatory header
-void write_snapblock(struct file *filp, 
+static int write_snapblock(const struct path *path_snapdir,
 		const struct snapblock_file_write_args *wargs) {
 
+	struct file *filp;
+	int rv = 0;
+	u64 blknr = wargs->mandatory_hdr->blknr;
+
+	rv = create_snapblock_file(blknr, &filp, path_snapdir);
+
+	if(rv != 0) {
+		return rv;
+	}
+
+	loff_t off;
+	size_t wrote;
+
+	wrote = kernel_write(
+			filp, wargs->mandatory_hdr, sizeof(struct snapblock_file_hdr), &off);
+
+	if(wrote != sizeof(struct snapblock_file_hdr)) {
+		rv = -EINVAL;
+		goto __write_snapblock_finish0;
+	}
+
+	if(wargs->extended_hdr != NULL && wargs->extended_hdr_size > 0) {
+		wrote = kernel_write(
+				filp, wargs->extended_hdr, wargs->extended_hdr_size, &off);
+
+		if(wrote != wargs->extended_hdr_size) {
+			rv = -EINVAL;
+			goto __write_snapblock_finish0;
+		}
+	}
+
+	wrote = kernel_write(
+			filp,wargs->payload, wargs->payload_size, &off);
+
+	if(wrote != wargs->payload_size) {
+		rv = -EINVAL;
+	}
+
+__write_snapblock_finish0:
+	fput(filp);
+	return rv;
 }
 
 /**
@@ -335,9 +425,6 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	//anyway, we need to refresh LRU
-	add_lru(msw_args->cached_blocks, msw_args->block_nr);
-
 	if(!ensure_path_snapdir_ok(
 				&msw_args->path_snapdir, 
 				msw_args->original_dev_name, 
@@ -345,8 +432,19 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	// lookup dir
+	bool dir_found;
+	if(lookup_dir(msw_args->path_snapdir,msw_args->block_nr, &dir_found) != 0) {
+		goto __make_snapshot_finish0;
+	}
+
+	if(!dir_found) {
+		struct snapblock_file_write_args wargs;
+		INIT_SNAPBLOCK_FILE_WRITE_ARGS(wargs, msw_args->block_nr, msw_args->block, msw_args->blocksize);
+		write_snapblock(msw_args->path_snapdir, &wargs);
+	}
+
 __make_snapshot_finish0:
+	add_lru(msw_args->cached_blocks, msw_args->block_nr);
 	kfree(msw_args->block);
 	kfree(msw_args);
 }
