@@ -1,10 +1,13 @@
-#include "linux/dcache.h"
+#include <linux/version.h>
 #include <linux/namei.h>
+#include <linux/fs.h>
 
 #include <bdsnap/bdsnap.h>
 
 #include <devices.h>
 #include <lru.h>
+
+#define __packed __attribute__((__packed__))
 
 /**
  * 
@@ -132,6 +135,178 @@ static inline bool ensure_cached_blocks_lru_ok(struct list_lru **lru) {
 
 /**
  *
+ * snapblock file mgmt
+ *
+ */
+
+//we reserve the possibility to encrypt, 
+//compress, both,... with various algos :)
+//according to the type, then we can use 
+//some sort of specific "extended" header
+//in between the mandatory/main one and the
+//payload, to insert extra infos
+//payld_off specifies where is the payload and
+//the length of the extended header for specific
+//payld_type. This may be a cksum with SHA-256 or
+//SHA-512, encryption with a block cipher, HMAC,
+//digital signature with ECDSA, ...
+//
+//for example, a type of extended header may be
+//
+//struct snapblock_file_sha256_hdr {
+//  whatever
+//};
+//
+//Only one single extended header is allowed and
+//the structure would be:
+//
+//------------------------------------------
+//40 Bytes mandatory header
+//------------------------------------------
+//Arbitrary length optional extended header
+//------------------------------------------
+//Arbitrary length payload
+//------------------------------------------
+//
+
+#define SNAPBLOCK_MAGIC 0x5ade5aad5abe5aef
+
+enum snapblock_payload_type : u64 {
+	SNAPBLOCK_PAYLOAD_TYPE_RAW,
+};
+
+struct snapblock_file_hdr {
+	u64 magic;
+	u64 blknr;
+	u64 payldsiz;
+	enum snapblock_payload_type payld_type;
+	u64 payld_off;
+} __packed;
+
+int read_snapblock_mandatory_header(struct file *filp, 
+		struct snapblock_file_hdr *out_hdr) {
+
+	size_t nrbytes = sizeof(struct snapblock_file_hdr);
+
+	loff_t pos;
+	size_t read_bytes = kernel_read(filp, (char*) out_hdr, nrbytes, &pos);
+
+	if(read_bytes != nrbytes) {
+		return -ENODATA;
+	}
+
+	if(out_hdr->magic != SNAPBLOCK_MAGIC) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+struct snapblock_file_write_args {
+	const struct snapblock_file_hdr* mandatory_hdr;
+	const void* extended_hdr;
+	size_t extended_hdr_size;
+	const void* payload;
+	size_t payload_size;
+};
+
+// extended_header{,_size} can be NULL/0 (optional)
+// it is client code responsibility to fill the mandatory header
+void write_snapblock(struct file *filp, 
+		const struct snapblock_file_write_args *wargs) {
+
+}
+
+/**
+ *
+ * directory lookup
+ *
+ */
+
+struct lookup_dir_args {
+	sector_t blknr;
+	bool found;
+	struct path *path_snapdir;
+	struct dir_context ctx;
+};
+
+//ret true to keep going, false otherwise
+static bool lookup_dir_iter_cb(
+		struct dir_context *ctx, const char* item, 
+		int namelen, loff_t offset, u64 ino, 
+		unsigned int d_type) {
+
+	struct lookup_dir_args *lkargs = 
+		container_of(ctx, struct lookup_dir_args, ctx);
+
+	if(d_type != DT_REG) {
+		return true;
+	}
+
+	struct dentry *dent = lkargs->path_snapdir->dentry;
+	struct vfsmount *vfsm = lkargs->path_snapdir->mnt;
+
+	struct path path_snapblock;
+	int err = vfs_path_lookup(dent, vfsm, item, 0, &path_snapblock);
+	if(err != 0) {
+		return true;
+	}
+
+	path_get(&path_snapblock);
+
+	struct file *fsnapblock = dentry_open(&path_snapblock, O_RDONLY, current->cred);
+
+	bool res = true;
+
+	struct snapblock_file_hdr hdr;
+	if(read_snapblock_mandatory_header(fsnapblock, &hdr) == 0) {
+		if(hdr.magic == lkargs->blknr) {
+			lkargs->found = true;
+			res = false;
+		}
+	}
+
+	fput(fsnapblock);
+	path_put(&path_snapblock);
+
+	return res;
+}
+
+static int lookup_dir(struct path *path_snapdir, sector_t blknr, bool *out_found) {
+	*out_found = false;
+
+	struct file *fdir = dentry_open(path_snapdir, O_RDONLY, current->cred);
+	if(IS_ERR(fdir)) {
+		return PTR_ERR(fdir);
+	}
+
+	struct lookup_dir_args lkargs = {
+		.blknr = blknr,
+		.found = false,
+		.ctx = {
+			.actor = lookup_dir_iter_cb,
+			.pos = 0
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
+			,.count = 0
+#endif
+		},
+		.path_snapdir = path_snapdir
+	};
+
+	int err = iterate_dir(fdir, &lkargs.ctx);
+	if(err != 0) {
+		goto __lookup_dir_finish0;
+	}
+
+	*out_found = lkargs.found;
+
+__lookup_dir_finish0:
+	fput(fdir);
+	return err;
+}
+
+/**
+ *
  * snapshot deferred work
  *
  */
@@ -160,6 +335,7 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
+	//anyway, we need to refresh LRU
 	add_lru(msw_args->cached_blocks, msw_args->block_nr);
 
 	if(!ensure_path_snapdir_ok(
@@ -169,12 +345,7 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	struct file *fdir = dentry_open(msw_args->path_snapdir, O_RDONLY, current->cred);
-	if(IS_ERR(fdir)) {
-		goto __make_snapshot_finish0;
-	}
-
-	fput(fdir);
+	// lookup dir
 __make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);
