@@ -184,6 +184,14 @@ struct snapblock_file_hdr {
 	u64 payld_off;
 } __packed;
 
+#define DECLARE_SNAPBLOCK_FILE_HDR(_mand_hdr_name, __block_num, __payload_size) \
+	struct snapblock_file_hdr _mand_hdr_name; \
+	(_mand_hdr_name).magic = SNAPBLOCK_MAGIC; \
+	(_mand_hdr_name).blknr = (__block_num); \
+	(_mand_hdr_name).payldsiz = (__payload_size); \
+	(_mand_hdr_name).payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
+	(_mand_hdr_name).payld_off = sizeof(struct snapblock_file_hdr)
+
 static int read_snapblock_mandatory_header(struct file *filp, 
 		struct snapblock_file_hdr *out_hdr) {
 
@@ -211,16 +219,13 @@ struct snapblock_file_write_args {
 	size_t payload_size;
 };
 
-#define INIT_SNAPBLOCK_FILE_WRITE_ARGS(args, blknr, pld, pldsz) \
-	(args).extended_hdr = NULL; \
-	(args).extended_hdr_size = 0; \
-	(args).payload = (pld); \
-	(args).payload_size = (pldsz)
-	(args).mandatory_hdr.magic = SNAPBLOCK_MAGIC; \
-	(args).mandatory_hdr.blknr = (blknr); \
-	(args).mandatory_hdr.payldsiz = (pldsz); \
-	(args).mandatory_hdr.payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
-	(args).mandatory_hdr.payld_off = sizeof(struct snapblock_file_hdr)
+#define DECLARE_SNAPBLOCK_FILE_WRITE_ARGS(_args_name, __mand_hdr, __payload, __payload_size) \
+	struct snapblock_file_write_args _args_name; \
+	(_args_name).mandatory_hdr = (__mand_hdr); \
+	(_args_name).extended_hdr = NULL; \
+	(_args_name).extended_hdr_size = 0; \
+	(_args_name).payload = ((const void*)(__payload)); \
+	(_args_name).payload_size = (__payload_size)
 
 static int create_snapblock_file(u64 blknr, struct file **out_filp, const struct path *path_snapdir) {
 	char *namebuf = kmalloc(PATH_MAX, GFP_KERNEL);
@@ -438,8 +443,8 @@ static void make_snapshot(struct work_struct *work) {
 	}
 
 	if(!dir_found) {
-		struct snapblock_file_write_args wargs;
-		INIT_SNAPBLOCK_FILE_WRITE_ARGS(wargs, msw_args->block_nr, msw_args->block, msw_args->blocksize);
+		DECLARE_SNAPBLOCK_FILE_HDR(file_hdr, msw_args->block_nr, msw_args->blocksize);
+		DECLARE_SNAPBLOCK_FILE_WRITE_ARGS(wargs, &file_hdr, msw_args->block, msw_args->blocksize);
 		write_snapblock(msw_args->path_snapdir, &wargs);
 	}
 
