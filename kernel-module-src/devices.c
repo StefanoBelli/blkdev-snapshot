@@ -6,8 +6,6 @@
 #include <pr-err-failure.h>
 #include <get-loop-backing-file.h>
 
-#define __unused __attribute__((__unused__))
-
 /**
  * 
  * commmon across both "pure" block device and loop device
@@ -129,7 +127,7 @@ static const struct rhashtable_params blkdevs_ht_params = {
 
 static struct rhashtable blkdevs_ht;
 
-static void blkdevs_ht_free_fn(void* ptr, void* __unused arg) {
+static void blkdevs_ht_free_fn(void* ptr, void* __always_unused arg) {
 	struct blkdev_object *bdptr = (struct blkdev_object*) ptr;
 	cleanup_object_data(&bdptr->value);
 	kfree_rcu(bdptr, rcu);
@@ -157,7 +155,7 @@ static const struct rhashtable_params loops_ht_params = {
 
 static struct rhashtable loops_ht;
 
-static void loops_ht_free_fn(void* ptr, void* __unused arg) {
+static void loops_ht_free_fn(void* ptr, void* __always_unused arg) {
 	struct loop_object *loptr = (struct loop_object*) ptr;
 	cleanup_object_data(&loptr->value);
 	kfree_rcu(loptr, rcu);
@@ -385,7 +383,7 @@ int register_device(const char* path) {
  */
 
 static int try_to_remove_loop_device(
-		const char* path, const char* __unused arg) {
+		const char* path, const char* __always_unused arg) {
 
 	//PATH_MAX is too big for the stack
 	char *full_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
@@ -424,7 +422,7 @@ static int try_to_remove_loop_device(
 }
 
 static int try_to_remove_block_device(
-		dev_t bddevt, const char* __unused arg) {
+		dev_t bddevt, const char* __always_unused arg) {
 
 	rcu_read_lock();
 

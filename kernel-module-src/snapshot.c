@@ -1,13 +1,11 @@
 #include <linux/version.h>
 #include <linux/namei.h>
-#include <linux/fs.h>
 
 #include <bdsnap/bdsnap.h>
 
 #include <devices.h>
 #include <lru.h>
-
-#define __packed __attribute__((__packed__))
+#include <pr-err-failure.h>
 
 /**
  * 
@@ -44,40 +42,81 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
  *
  */
 
+static inline void path_snapdir_get(struct path **path_snapdir, struct dentry *dent, struct vfsmount *mnt) {
+	//this will be handed over to next work
+	//until a deactivation or epoch change
+	(*path_snapdir)->dentry = dent;
+	(*path_snapdir)->mnt = mnt;
+	path_get(*path_snapdir);
+}
+
+static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry, struct vfsmount *mnt) {
+	struct path out_path;
+
+	if(vfs_path_lookup(dentry, mnt, relname, 0, &out_path) == 0) {
+		dget(out_path.dentry);
+		path_put(&out_path);
+		return out_path.dentry;
+	}
+
+	if(unlikely(mnt_want_write(mnt) != 0)) {
+		pr_err_failure("mnt_want_write");
+		return NULL;
+	}
+
+	struct dentry *d_new = mkdir_via_name_by_dent(relname, dentry, mnt_idmap(mnt));
+
+	mnt_drop_write(mnt);
+
+	if(IS_ERR(d_new)) {
+		pr_err_failure_with_code("vfs_mkdir", PTR_ERR(d_new));
+		return NULL;
+	}
+
+	return d_new;
+}
+
 static bool init_path_snapdir(struct path **path_snapdir, const char *snap_subdir_name) {
+	bool rv = false;
 	struct path root_path;
-	if(kern_path("/", 0, &root_path) != 0) {
+
+	int kern_path_err = kern_path("/", 0, &root_path);
+
+	if(unlikely(kern_path_err != 0)) {
+		pr_err_failure_with_code("kern_path", kern_path_err);
 		return false;
 	}
 
-	if(mnt_want_write(root_path.mnt) != 0) {
-		path_put(&root_path);
-		return false;
+	struct dentry *d_snap = mkdir_may_exist("snapshot", root_path.dentry, root_path.mnt);
+
+	if(d_snap == NULL) {
+		pr_err_failure("mkdir_may_exist");
+		goto __init_path_snapdir_finish0;
 	}
 
-	struct mnt_idmap *idmap = mnt_idmap(root_path.mnt);
+	struct dentry *d_sub = mkdir_may_exist(snap_subdir_name, d_snap, root_path.mnt);
 
-	struct dentry *d_snap = mkdir_via_name_by_dent("snapshot", root_path.dentry, idmap);
-	dget(d_snap);
-
-	struct dentry *d_sub = mkdir_via_name_by_dent(snap_subdir_name, d_snap, idmap);
-
-	mnt_drop_write(root_path.mnt);
 	dput(d_snap);
 
-	*path_snapdir = kmalloc(sizeof(struct path), GFP_KERNEL);
-	if(*path_snapdir == NULL) {
-		path_put(&root_path);
-		return false;
+	if(d_sub == NULL) {
+		pr_err_failure("mkdir_may_exist");
+		goto __init_path_snapdir_finish0;
 	}
 
-	(*path_snapdir)->dentry = d_sub;
-	(*path_snapdir)->mnt = root_path.mnt;
+	*path_snapdir = kmalloc(sizeof(struct path), GFP_KERNEL);
+	if(unlikely(*path_snapdir == NULL)) {
+		pr_err_failure("kmalloc");
+		goto __init_path_snapdir_finish1;
+	}
 
-	path_get(*path_snapdir);
+	rv = true;
+	path_snapdir_get(path_snapdir, d_sub, root_path.mnt);
+
+__init_path_snapdir_finish1:
+	dput(d_sub);
+__init_path_snapdir_finish0:
 	path_put(&root_path);
-
-	return true;
+	return rv;
 }
 
 static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devname, const char* mountdate) {
@@ -87,17 +126,11 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devna
 			return true;
 		}
 
-		struct dentry *dent_par = dget_parent(dent);
-		if(likely(d_is_positive(dent_par) && d_is_dir(dent_par))) {
-			struct mnt_idmap *idmap = mnt_idmap((*path_snapdir)->mnt);
-			if(mnt_want_write((*path_snapdir)->mnt) == 0) {
-				(*path_snapdir)->dentry = mkdir_via_dent_by_dent(dent, dent_par, idmap);
-				mnt_drop_write((*path_snapdir)->mnt);
-				return !IS_ERR((*path_snapdir)->dentry);
-			}
-		}
+		pr_warn("%s: existing snapblock directory is broken (devname=%s, mountdate=%s)\n",
+				module_name(THIS_MODULE), devname, mountdate);
 
 		path_put(*path_snapdir);
+		kfree(*path_snapdir);
 		*path_snapdir = NULL;
 
 		return ensure_path_snapdir_ok(path_snapdir, devname, mountdate);
@@ -139,36 +172,6 @@ static inline bool ensure_cached_blocks_lru_ok(struct list_lru **lru) {
  *
  */
 
-//we reserve the possibility to encrypt, 
-//compress, both,... with various algos :)
-//according to the type, then we can use 
-//some sort of specific "extended" header
-//in between the mandatory/main one and the
-//payload, to insert extra infos
-//payld_off specifies where is the payload and
-//the length of the extended header for specific
-//payld_type. This may be a cksum with SHA-256 or
-//SHA-512, encryption with a block cipher, HMAC,
-//digital signature with ECDSA, ...
-//
-//for example, a type of extended header may be
-//
-//struct snapblock_file_sha256_hdr {
-//  whatever
-//};
-//
-//Only one single extended header is allowed and
-//the structure would be:
-//
-//------------------------------------------
-//40 Bytes mandatory header
-//------------------------------------------
-//Arbitrary length optional extended header
-//------------------------------------------
-//Arbitrary length payload
-//------------------------------------------
-//
-
 #define SNAPBLOCK_MAGIC 0x5ade5aad5abe5aef
 
 enum snapblock_payload_type : u64 {
@@ -184,7 +187,11 @@ struct snapblock_file_hdr {
 	u64 payld_off;
 } __packed;
 
-#define DECLARE_SNAPBLOCK_FILE_HDR(_mand_hdr_name, __block_num, __payload_size) \
+#define DECLARE_SNAPBLOCK_FILE_HDR( \
+		_mand_hdr_name, \
+		__block_num, \
+		__payload_size) \
+		\
 	struct snapblock_file_hdr _mand_hdr_name; \
 	(_mand_hdr_name).magic = SNAPBLOCK_MAGIC; \
 	(_mand_hdr_name).blknr = (__block_num); \
@@ -219,7 +226,12 @@ struct snapblock_file_write_args {
 	size_t payload_size;
 };
 
-#define DECLARE_SNAPBLOCK_FILE_WRITE_ARGS(_args_name, __mand_hdr, __payload, __payload_size) \
+#define DECLARE_SNAPBLOCK_FILE_WRITE_ARGS( \
+		_args_name, \
+		__mand_hdr, \
+		__payload, \
+		__payload_size) \
+		\
 	struct snapblock_file_write_args _args_name; \
 	(_args_name).mandatory_hdr = (__mand_hdr); \
 	(_args_name).extended_hdr = NULL; \
@@ -227,7 +239,9 @@ struct snapblock_file_write_args {
 	(_args_name).payload = ((const void*)(__payload)); \
 	(_args_name).payload_size = (__payload_size)
 
-static int create_snapblock_file(u64 blknr, struct file **out_filp, const struct path *path_snapdir) {
+static int create_snapblock_file(u64 blknr, 
+		struct file **out_filp, const struct path *path_snapdir) {
+
 	char *namebuf = kmalloc(PATH_MAX, GFP_KERNEL);
 	if(namebuf == NULL) {
 		return -ENOMEM;
@@ -264,8 +278,6 @@ static int create_snapblock_file(u64 blknr, struct file **out_filp, const struct
 	return 0;
 }
 
-// extended_header{,_size} can be NULL/0 (optional)
-// it is client code responsibility to fill the mandatory header
 static int write_snapblock(const struct path *path_snapdir,
 		const struct snapblock_file_write_args *wargs) {
 
@@ -325,11 +337,10 @@ struct lookup_dir_args {
 	struct dir_context ctx;
 };
 
-//ret true to keep going, false otherwise
 static bool lookup_dir_iter_cb(
 		struct dir_context *ctx, const char* item, 
-		int namelen, loff_t offset, u64 ino, 
-		unsigned int d_type) {
+		int __always_unused namelen, loff_t __always_unused offset, 
+		u64 __always_unused ino, unsigned int d_type) {
 
 	struct lookup_dir_args *lkargs = 
 		container_of(ctx, struct lookup_dir_args, ctx);
@@ -346,8 +357,6 @@ static bool lookup_dir_iter_cb(
 	if(err != 0) {
 		return true;
 	}
-
-	path_get(&path_snapblock);
 
 	struct file *fsnapblock = dentry_open(&path_snapblock, O_RDONLY, current->cred);
 
@@ -445,11 +454,13 @@ static void make_snapshot(struct work_struct *work) {
 	if(!dir_found) {
 		DECLARE_SNAPBLOCK_FILE_HDR(file_hdr, msw_args->block_nr, msw_args->blocksize);
 		DECLARE_SNAPBLOCK_FILE_WRITE_ARGS(wargs, &file_hdr, msw_args->block, msw_args->blocksize);
-		write_snapblock(msw_args->path_snapdir, &wargs);
+		if(write_snapblock(msw_args->path_snapdir, &wargs) != 0) {
+			goto __make_snapshot_finish0;
+		}
 	}
 
-__make_snapshot_finish0:
 	add_lru(msw_args->cached_blocks, msw_args->block_nr);
+__make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);
 }

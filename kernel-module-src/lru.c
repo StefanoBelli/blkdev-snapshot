@@ -17,11 +17,27 @@ llru_op_fpt llru_del = list_lru_del;
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
-#define LIST_LRU_WALK_CB_ARGS struct list_head *item, struct list_lru_one *list, void *args
+
+#	define LIST_LRU_WALK_CB_ARGS \
+		struct list_head *item, \
+		__always_unused struct list_lru_one *l, \
+		__maybe_unused void *args
+
 #elif KERNEL_VERSION(4,0,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,13,0)
-#define LIST_LRU_WALK_CB_ARGS struct list_head *item, struct list_lru_one *list, spinlock_t *lock, void *args
+
+#	define LIST_LRU_WALK_CB_ARGS \
+		struct list_head *item, \
+		__always_unused struct list_lru_one *l, \
+		__always_unused spinlock_t *s, \
+		__maybe_unused void *args
+
 #elif KERNEL_VERSION(3,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-#define LIST_LRU_WALK_CB_ARGS struct list_head *item, spinlock_t *lock, void *args
+
+#	define LIST_LRU_WALK_CB_ARGS \
+		struct list_head *item, \
+		__always_unused spinlock_t *s, \
+		__maybe_unused void *args
+
 #else
 #error unsupported kernel version (missing typedef list_lru_walk_cb)
 #endif
