@@ -43,6 +43,7 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
 
 	struct dentry *d_new = new_dentry(dir_name, d_parent, idmap);
 	if(IS_ERR(d_new)) {
+		pr_err_failure_with_code("new_dentry", PTR_ERR(d_new));
 		inode_unlock(ino);
 		return NULL;
 	}
@@ -51,10 +52,10 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
 
 	inode_unlock(ino);
 
-	if(!IS_ERR(d_new)) {
-		dput(d_new);
+	if(IS_ERR(d_new)) {
+		pr_err_failure_with_code("vfs_mkdir", PTR_ERR(d_new));
 	}
-	
+
 	return d_new;
 }
 
@@ -100,7 +101,7 @@ static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry
 	mnt_drop_write(mnt);
 
 	if(IS_ERR(d_new)) {
-		pr_err_failure_with_code("vfs_mkdir", PTR_ERR(d_new));
+		pr_err_failure("mkdir_via_name_by_dent");
 		return NULL;
 	}
 
@@ -254,7 +255,7 @@ struct snapblock_file_hdr {
 	(_mand_hdr_name).payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
 	(_mand_hdr_name).payld_off = sizeof(struct snapblock_file_hdr)
 
-static int read_snapblock_mandatory_header(struct file *filp, 
+static bool read_snapblock_mandatory_header(struct file *filp, 
 		struct snapblock_file_hdr *out_hdr) {
 
 	size_t nrbytes = sizeof(struct snapblock_file_hdr);
@@ -263,14 +264,14 @@ static int read_snapblock_mandatory_header(struct file *filp,
 	size_t read_bytes = kernel_read(filp, (char*) out_hdr, nrbytes, &pos);
 
 	if(read_bytes != nrbytes) {
-		return -ENODATA;
+		return false;
 	}
 
 	if(out_hdr->magic != SNAPBLOCK_MAGIC) {
-		return -EINVAL;
+		return false;
 	}
 
-	return 0;
+	return true;
 }
 
 static bool create_snapblock_file(u64 blknr, 
@@ -290,13 +291,14 @@ static bool create_snapblock_file(u64 blknr,
 
 	struct mnt_idmap *par_idmap = mnt_idmap(path_snapdir->mnt);
 	struct dentry *d_new = new_dentry(namebuf, path_snapdir->dentry, par_idmap);
-	if(IS_ERR(d_new)) {
-		inode_unlock(par_ino);
-		kfree(namebuf);
-		return false;
-	}
 
 	kfree(namebuf);
+
+	if(IS_ERR(d_new)) {
+		pr_err_failure_with_code("new_dentry", PTR_ERR(d_new));
+		inode_unlock(par_ino);
+		return false;
+	}
 
 	int err = vfs_create(par_idmap, par_ino, d_new, FMODE_WRITE, true);
 
@@ -441,7 +443,7 @@ static bool lookup_dir_iter_cb(
 	bool cb_res = true;
 
 	struct snapblock_file_hdr hdr;
-	if(read_snapblock_mandatory_header(fsnapblock, &hdr) == 0) {
+	if(read_snapblock_mandatory_header(fsnapblock, &hdr)) {
 		if(hdr.magic == lkargs->blknr) {
 			lkargs->found = true;
 			cb_res = false;
