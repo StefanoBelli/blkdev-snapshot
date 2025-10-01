@@ -8,6 +8,25 @@
 #include <pr-err-failure.h>
 
 /**
+ *
+ * dentry cache alloc
+ *
+ */
+
+// base (aka parent) inode needs to be locked!
+static inline struct dentry *new_dentry(
+		const char* name, struct dentry* base, void* __maybe_unused moreargs) {
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
+	return lookup_one((struct mnt_idmap*) moreargs, &QSTR(name), base);
+#elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,16,0)
+	return lookup_one_len(name, base, strlen(name));
+#else
+#	error we cant help (non-exported lookup_one_len), maybe upgrade?
+#endif
+}
+
+/**
  * 
  * mkdir core
  *
@@ -18,15 +37,18 @@
 // no need to dget on the newly-allocated dentry
 // requires mnt_want_write
 static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct dentry *d_parent, struct mnt_idmap *idmap) {
-	struct dentry *d_new = d_alloc_name(d_parent, dir_name);
-	if(unlikely(d_new == NULL)) {
-		pr_err_failure("d_alloc_name");
+	struct inode *ino = d_inode(d_parent);
+
+	inode_lock(ino);
+
+	struct dentry *d_new = new_dentry(dir_name, d_parent, idmap);
+	if(IS_ERR(d_new)) {
+		inode_unlock(ino);
 		return NULL;
 	}
 
-	struct inode *ino = d_inode(d_parent);
-	inode_lock(ino);
 	d_new = vfs_mkdir(idmap, ino, d_new, 0600);
+
 	inode_unlock(ino);
 
 	if(!IS_ERR(d_new)) {
@@ -262,19 +284,24 @@ static bool create_snapblock_file(u64 blknr,
 
 	snprintf(namebuf, PATH_MAX, "snapblock-%lld", blknr);
 
-	struct dentry *d_new = d_alloc_name(path_snapdir->dentry, namebuf);
-	if(d_new == NULL) {
-		pr_err_failure("d_alloc_name");
+	struct inode *par_ino = d_inode(path_snapdir->dentry);
+
+	inode_lock(par_ino);
+
+	struct mnt_idmap *par_idmap = mnt_idmap(path_snapdir->mnt);
+	struct dentry *d_new = new_dentry(namebuf, path_snapdir->dentry, par_idmap);
+	if(IS_ERR(d_new)) {
+		inode_unlock(par_ino);
 		kfree(namebuf);
 		return false;
 	}
 
 	kfree(namebuf);
 
-	struct mnt_idmap *par_idmap = mnt_idmap(path_snapdir->mnt);
-	struct inode *par_ino = d_inode(path_snapdir->dentry);
-
 	int err = vfs_create(par_idmap, par_ino, d_new, FMODE_WRITE, true);
+
+	inode_unlock(par_ino);
+
 	if(err != 0) {
 		pr_err_failure_with_code("vfs_create", err);
 		dput(d_new);
