@@ -42,7 +42,7 @@ void __exit exit_blkdev_snapshot_module(void);
 	if(__SETUP_RVVAR != 0)
 
 #define pr_err_setup(name) \
-	pr_err_failure_with_code("setup"#name, __SETUP_RVVAR)
+	pr_err_failure_with_code("setup_"#name, __SETUP_RVVAR)
 
 int __init init_blkdev_snapshot_module(void) {
 	if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {

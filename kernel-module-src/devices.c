@@ -59,7 +59,7 @@ static void init_object_data_loop(
 // - when module is unloaded, so rhashtable_free_and_destroy triggers the "freefn"
 // - when user deactivates snapshot for a device
 // - when we're unable to "insert device" and we need to cleanup (no locking as
-//   in this case, object_data is not visible in any way to other thrs)
+//	 in this case, object_data is not visible in any way to other thrs)
 static void __cleanup_object_data(struct object_data* data, bool locking) {
 	if(locking) {
 		spin_lock(&data->general_lock);
@@ -120,7 +120,8 @@ struct blkdev_object {
 static const struct rhashtable_params blkdevs_ht_params = {
 	.key_len = sizeof(dev_t),
 	.key_offset = offsetof(struct blkdev_object, key),
-	.head_offset = offsetof(struct blkdev_object, linkage)
+	.head_offset = offsetof(struct blkdev_object, linkage),
+	.automatic_shrinking = true
 };
 
 static struct rhashtable blkdevs_ht;
@@ -145,10 +146,27 @@ struct loop_object {
 	struct object_data value;
 };
 
+static u32 loop_object_key_hashfn(const void *data, u32 __always_unused len, u32 seed) {
+	const char *s = data;
+	return jhash(s, strlen(s), seed);
+}
+
+static u32 loop_object_obj_hashfn(const void *data, u32 len, u32 seed) {
+	return jhash(data, len, seed);
+}
+
+static int loop_object_obj_cmpfn(struct rhashtable_compare_arg *arg, const void *obj) {
+	const char *new_key = arg->key;
+	return strcmp(((const struct loop_object*) obj)->key, new_key);
+}
+
 static const struct rhashtable_params loops_ht_params = {
-	.key_len = sizeof(char) * PATH_MAX,
 	.key_offset = offsetof(struct loop_object, key),
-	.head_offset = offsetof(struct loop_object, linkage)
+	.head_offset = offsetof(struct loop_object, linkage),
+	.hashfn = loop_object_key_hashfn,
+	.obj_hashfn = loop_object_obj_hashfn,
+	.obj_cmpfn = loop_object_obj_cmpfn,
+	.automatic_shrinking = true
 };
 
 static struct rhashtable loops_ht;
@@ -323,10 +341,10 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 	init_object_data_loop(&new_obj->value, new_obj->key, original_dev_name);
 
 	struct loop_object *old_obj = 
-		rhashtable_lookup_get_insert_fast(&loops_ht, &new_obj->linkage, loops_ht_params);
+		rhashtable_lookup_get_insert_key(&loops_ht, new_obj->key, &new_obj->linkage, loops_ht_params);
 	
 	if(IS_ERR(old_obj)) {
-		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
+		pr_err_failure_with_code("rhashtable_lookup_get_insert_key", PTR_ERR(old_obj));
 		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;
@@ -351,10 +369,10 @@ static int try_to_insert_block_device(dev_t bddevt, const char* original_dev_nam
 	init_object_data_blkdev(&new_obj->value, bddevt, original_dev_name);
 
 	struct blkdev_object *old_obj = 
-		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
+		rhashtable_lookup_get_insert_key(&blkdevs_ht, &new_obj->key, &new_obj->linkage, blkdevs_ht_params);
 		
 	if(IS_ERR(old_obj)) {
-		pr_err_failure_with_code("rhashtable_lookup_get_insert_fast", PTR_ERR(old_obj));
+		pr_err_failure_with_code("rhashtable_lookup_get_insert_key", PTR_ERR(old_obj));
 		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;

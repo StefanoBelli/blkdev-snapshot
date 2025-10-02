@@ -233,7 +233,12 @@ static int old_mount_entry_handler(struct kretprobe_instance* krp_inst, struct p
 
 static int umount_entry_handler(struct kretprobe_instance* krp_inst, struct pt_regs* regs) {
 	struct path *path = (struct path*) regs->di;
+
 	struct block_device *bdev = get_bdev_from_path(path);
+	if(bdev == NULL) {
+		return 1;
+	}
+
 	struct mountinfo *minfo = (struct mountinfo*) krp_inst->data;
 	from_block_device_to_mountinfo(minfo, bdev);
 
