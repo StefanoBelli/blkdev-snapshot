@@ -1,5 +1,8 @@
 #include <linux/version.h>
 #include <linux/namei.h>
+#if KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
+#include <linux/mount.h>
+#endif
 
 #include <bdsnap/bdsnap.h>
 
@@ -13,17 +16,21 @@
  */
 
 // base (aka parent) inode needs to be locked!
-static inline struct dentry *new_dentry(
-		const char* name, struct dentry* base, void* __maybe_unused moreargs) {
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
-	return lookup_one((struct mnt_idmap*) moreargs, &QSTR(name), base);
+
+#	define new_dentry(_name, _base, _mnt) \
+		(lookup_one(mnt_idmap(_mnt), &QSTR(_name), _base))
+
 #elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,16,0)
-	return lookup_one_len(name, base, strlen(name));
+
+#	define new_dentry(_name, _base, ...) \
+		(lookup_one_len(_name, _base, _strlen(_name)))
+
 #else
+
 #	error we cant help (non-exported lookup_one_len), maybe upgrade?
+
 #endif
-}
 
 /**
  * 
@@ -35,19 +42,27 @@ static inline struct dentry *new_dentry(
 // since we allocated it, if vfs_mkdir complains then we invalidate it
 // no need to dget on the newly-allocated dentry
 // requires mnt_want_write
-static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct dentry *d_parent, struct mnt_idmap *idmap) {
+static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct dentry *d_parent, struct vfsmount *mnt) {
 	struct inode *ino = d_inode(d_parent);
 
 	inode_lock(ino);
 
-	struct dentry *d_new = new_dentry(dir_name, d_parent, idmap);
+	struct dentry *d_new = new_dentry(dir_name, d_parent, mnt);
 	if(IS_ERR(d_new)) {
 		pr_err_failure_with_code("new_dentry", PTR_ERR(d_new));
 		inode_unlock(ino);
 		return NULL;
 	}
 
-	d_new = vfs_mkdir(idmap, ino, d_new, 0600);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+	d_new = vfs_mkdir(mnt_idmap(mnt), ino, d_new, 0600);
+#elif KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
+	d_new = vfs_mkdir(mnt_user_ns(mnt), ino, d_new, 0600);
+#elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
+	d_new = vfs_mkdir(ino, d_new, 0600);
+#else
+#	error too old of a system... (vfs_mkdir is non-exported)
+#endif
 
 	inode_unlock(ino);
 
@@ -95,7 +110,7 @@ static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry
 		return NULL;
 	}
 
-	struct dentry *d_new = mkdir_via_name_by_dent(relname, dentry, mnt_idmap(mnt));
+	struct dentry *d_new = mkdir_via_name_by_dent(relname, dentry, mnt);
 
 	mnt_drop_write(mnt);
 
