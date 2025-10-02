@@ -6,7 +6,7 @@
 
 #include <mounts.h>
 #include <devices.h>
-#include <lru.h>
+#include <lru-ng.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
 #error your version is not compat (reason: kretprobes hooked funcs)
@@ -21,7 +21,7 @@
 struct finish_epoch_work {
 	struct work_struct work;
 	struct path *path;
-	struct list_lru *lru;
+	struct lru_ng *lru;
 };
 
 static void cleanup_epoch_work(struct work_struct *work) {
@@ -33,8 +33,7 @@ static void cleanup_epoch_work(struct work_struct *work) {
 	}
 
 	if(few->lru != NULL) {
-		destroy_all_elems_in_lru(few->lru);
-		list_lru_destroy(few->lru);
+		lru_ng_cleanup(few->lru);
 		kfree(few->lru);
 	}
 
@@ -79,7 +78,7 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 			container_of(epoch, struct object_data, e);
 
 		struct path *saved_path = data->e.path_snapdir;
-		struct list_lru *saved_lru = data->e.cached_blocks;
+		struct lru_ng *saved_lru = data->e.cached_blocks;
 
 		data->e.path_snapdir = NULL;
 		data->e.cached_blocks = NULL;

@@ -4,7 +4,6 @@
 #include <bdsnap/bdsnap.h>
 
 #include <devices.h>
-#include <lru.h>
 #include <pr-err-failure.h>
 
 /**
@@ -199,16 +198,16 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devna
  *
  */
 
-static inline bool ensure_cached_blocks_lru_ok(struct list_lru **lru) {
+static inline bool ensure_cached_blocks_lru_ok(struct lru_ng **lru) {
 	if(unlikely(*lru == NULL)) {
-		*lru = kmalloc(sizeof(struct list_lru), GFP_KERNEL);
+		*lru = kmalloc(sizeof(struct lru_ng), GFP_KERNEL);
 		if(unlikely(*lru == NULL)) {
 			pr_err_failure("kmalloc");
 			return false;
 		}
 
-		if(unlikely(list_lru_init(*lru) != 0)) {
-			pr_err_failure("list_lru_init");
+		if(unlikely(!lru_ng_init(*lru))) {
+			pr_err_failure("lru_ng_init");
 			kfree(*lru);
 			*lru = NULL;
 			return false;
@@ -502,7 +501,7 @@ struct make_snapshot_work {
 	unsigned blocksize;
 	char* block;
 	struct path *path_snapdir;
-	struct list_lru *cached_blocks;
+	struct lru_ng *cached_blocks;
 	char original_dev_name[PATH_MAX];
 	char first_mount_date[MNT_FMT_DATE_LEN + 1];
 	struct work_struct work;
@@ -517,7 +516,7 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	if(lookup_lru(msw_args->cached_blocks, msw_args->block_nr)) {
+	if(lru_ng_lookup(msw_args->cached_blocks, msw_args->block_nr)) {
 		goto __make_snapshot_finish0;
 	}
 
@@ -541,7 +540,7 @@ static void make_snapshot(struct work_struct *work) {
 		}
 	}
 
-	add_lru(msw_args->cached_blocks, msw_args->block_nr);
+	lru_ng_add(msw_args->cached_blocks, msw_args->block_nr);
 __make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);

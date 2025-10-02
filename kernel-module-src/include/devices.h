@@ -5,6 +5,7 @@
 #include <linux/workqueue.h>
 
 #include <mounts.h>
+#include <lru-ng.h>
 
 #define MNT_FMT_DATE_LEN sizeof("-9999-12-31_23:59:59")
 
@@ -12,7 +13,7 @@ struct epoch {
 	int n_currently_mounted;
 	char first_mount_date[MNT_FMT_DATE_LEN + 1];
 	struct path *path_snapdir;
-	struct list_lru *cached_blocks;
+	struct lru_ng *cached_blocks;
 };
 
 // - the wq_destroy_lock can be held by the thread which execution path falls in
