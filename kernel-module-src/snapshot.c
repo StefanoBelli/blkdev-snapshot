@@ -183,9 +183,9 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devna
 		snprintf(subdirname, subdirname_len_wnul, "%s%s", devname, mountdate);
 
 		// here, if res is false:
-		//  * no kmalloc of path_snapdir went through
-		//  * no path_get of path_snapdir
-		//  * path_snapdir ptr is still NULL
+		//	* no kmalloc of path_snapdir went through
+		//	* no path_get of path_snapdir
+		//	* path_snapdir ptr is still NULL
 		bool res = init_path_snapdir(path_snapdir, subdirname);
 		kfree(subdirname);
 
