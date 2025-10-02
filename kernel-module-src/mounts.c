@@ -33,8 +33,7 @@ static void cleanup_epoch_work(struct work_struct *work) {
 	}
 
 	if(few->lru != NULL) {
-		lru_ng_cleanup(few->lru);
-		kfree(few->lru);
+		lru_ng_cleanup_and_destroy(few->lru);
 	}
 
 	kfree(few);

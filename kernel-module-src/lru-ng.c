@@ -49,9 +49,25 @@ struct lru_node {
 	sector_t blknr;
 };
 
-bool lru_ng_init(struct lru_ng* lru) {
+static inline bool lru_ng_init(struct lru_ng* lru) {
 	hash_init(lru->hasht);
 	return list_lru_init(&lru->llru) == 0;
+}
+
+struct lru_ng *lru_ng_alloc_and_init(void) {
+	struct lru_ng *lru = kzalloc(sizeof(struct lru_ng), GFP_KERNEL);
+	if(lru == NULL) {
+		pr_err_failure("kzalloc");
+		return NULL;
+	}
+
+	if(!lru_ng_init(lru)) {
+		pr_err_failure("lru_ng_init");
+		kfree(lru);
+		return NULL;
+	}
+
+	return lru;
 }
 
 static enum lru_status evict_cb(LIST_LRU_WALK_CB_ARGS) {
@@ -119,7 +135,12 @@ bool lru_ng_lookup(struct lru_ng * lru, sector_t key) {
 	return false;
 }
 
-void lru_ng_cleanup(struct lru_ng* lru) {
+static inline void lru_ng_cleanup(struct lru_ng* lru) {
 	list_lru_walk(&lru->llru, evict_cb, NULL, ULONG_MAX);
 	list_lru_destroy(&lru->llru);
+}
+
+void lru_ng_cleanup_and_destroy(struct lru_ng* lru) {
+	lru_ng_cleanup(lru);
+	kfree(lru);
 }

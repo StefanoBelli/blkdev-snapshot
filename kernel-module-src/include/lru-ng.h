@@ -12,10 +12,10 @@ struct lru_ng {
 	DECLARE_HASHTABLE(hasht, LRU_NG__HT_BUCKET_BITS);
 };
 
-bool lru_ng_init(struct lru_ng* lru);
+struct lru_ng* lru_ng_alloc_and_init(void);
 bool lru_ng_lookup(struct lru_ng * lru, sector_t key);
 bool lru_ng_add(struct lru_ng * lru, sector_t key);
-void lru_ng_cleanup(struct lru_ng* lru);
+void lru_ng_cleanup_and_destroy(struct lru_ng* lru);
 
 #endif
 

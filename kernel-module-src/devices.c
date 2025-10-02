@@ -84,8 +84,7 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 	}
 
 	if(data->e.cached_blocks != NULL) {
-		lru_ng_cleanup(data->e.cached_blocks);
-		kfree(data->e.cached_blocks);
+		lru_ng_cleanup_and_destroy(data->e.cached_blocks);
 		data->e.cached_blocks = NULL;
 	}
 

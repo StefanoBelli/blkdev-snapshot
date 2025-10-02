@@ -200,18 +200,7 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devna
 
 static inline bool ensure_cached_blocks_lru_ok(struct lru_ng **lru) {
 	if(unlikely(*lru == NULL)) {
-		*lru = kmalloc(sizeof(struct lru_ng), GFP_KERNEL);
-		if(unlikely(*lru == NULL)) {
-			pr_err_failure("kmalloc");
-			return false;
-		}
-
-		if(unlikely(!lru_ng_init(*lru))) {
-			pr_err_failure("lru_ng_init");
-			kfree(*lru);
-			*lru = NULL;
-			return false;
-		}
+		return (*lru = lru_ng_alloc_and_init()) != NULL;
 	}
 
 	return true;
