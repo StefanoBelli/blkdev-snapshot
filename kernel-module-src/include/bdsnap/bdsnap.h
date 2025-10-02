@@ -54,7 +54,7 @@ void* bdsnap_search_device(
  */
 bool bdsnap_make_snapshot(
 		void* handle, const char* block, 
-		sector_t blocknr, unsigned blocksize, 
+		sector_t blocknr, u64 blocksize, 
 		unsigned long cpu_flags);
 
 #endif

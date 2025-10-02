@@ -263,7 +263,7 @@ static bool read_snapblock_mandatory_header(struct file *filp,
 
 	size_t nrbytes = sizeof(struct snapblock_file_hdr);
 
-	loff_t pos;
+	loff_t pos = 0;
 	size_t read_bytes = kernel_read(filp, (char*) out_hdr, nrbytes, &pos);
 
 	if(read_bytes != nrbytes) {
@@ -292,8 +292,7 @@ static bool create_snapblock_file(u64 blknr,
 
 	inode_lock(par_ino);
 
-	struct mnt_idmap *par_idmap = mnt_idmap(path_snapdir->mnt);
-	struct dentry *d_new = new_dentry(namebuf, path_snapdir->dentry, par_idmap);
+	struct dentry *d_new = new_dentry(namebuf, path_snapdir->dentry, path_snapdir->mnt);
 
 	kfree(namebuf);
 
@@ -303,7 +302,15 @@ static bool create_snapblock_file(u64 blknr,
 		return false;
 	}
 
-	int err = vfs_create(par_idmap, par_ino, d_new, FMODE_WRITE, true);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+	int err = vfs_create(mnt_idmap(path_snapdir->mnt), par_ino, d_new, FMODE_WRITE, true);
+#elif KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
+	int err = vfs_create(mnt_user_ns(path_snapdir->mnt), par_ino, d_new, FMODE_WRITE, true);
+#elif KERNEL-VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
+	int err = vfs_create(par_ino, d_new, FMODE_WRITE, true);
+#else
+#	error missing vfs_create (non-exported symbol)
+#endif
 
 	inode_unlock(par_ino);
 
@@ -364,7 +371,7 @@ static bool write_snapblock(const struct path *path_snapdir,
 		return false;
 	}
 
-	loff_t off;
+	loff_t off = 0;
 	size_t wrote;
 	bool rv = false;
 
@@ -414,10 +421,16 @@ struct lookup_dir_args {
 	struct dir_context ctx;
 };
 
-static bool lookup_dir_iter_cb(
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+typedef bool __filldir_t_ret_type;
+#else
+typedef int __filldir_t_ret_type;
+#endif
+
+static __filldir_t_ret_type lookup_dir_iter_cb(
 		struct dir_context *ctx, const char* item, 
 		int __always_unused namelen, loff_t __always_unused offset, 
-		u64 __always_unused ino, unsigned int d_type) {
+		u64 __always_unused ino, unsigned d_type) {
 
 	struct lookup_dir_args *lkargs = 
 		container_of(ctx, struct lookup_dir_args, ctx);
@@ -502,7 +515,7 @@ __lookup_dir_finish0:
 
 struct make_snapshot_work {
 	sector_t block_nr;
-	unsigned blocksize;
+	u64 blocksize;
 	char* block;
 	struct path *path_snapdir;
 	struct lru_ng *cached_blocks;
@@ -628,7 +641,7 @@ EXPORT_SYMBOL_GPL(bdsnap_search_device);
 
 bool bdsnap_make_snapshot(
 		void* handle, const char* block, 
-		sector_t blocknr, unsigned blocksize, 
+		sector_t blocknr, u64 blocksize, 
 		unsigned long cpu_flags) {
 
 	struct object_data *data = (struct object_data*) handle;
