@@ -90,16 +90,20 @@ static inline void enforce_lru_size_limit(struct list_lru * lru) {
 }
 
 bool lru_ng_add(struct lru_ng * lru, sector_t key) {
+	printk("attempting to add key %d\n", key);
 	struct lru_node *node = kzalloc(sizeof(struct lru_node), GFP_KERNEL);
 	if(node == NULL) {
 		pr_err_failure("kmalloc");
 		return false;
 	}
 
+	INIT_HLIST_NODE(&node->hnode);
 	hash_add(lru->hasht, &node->hnode, key);
 
 	INIT_LIST_HEAD(&node->lru);
 	node->blknr = key;
+
+	printk("hash empty: %d\n", hash_empty(lru->hasht));
 
 	if(!llru_add(&lru->llru, &node->lru)) {
 		pr_err_failure("llru_add");
@@ -107,16 +111,20 @@ bool lru_ng_add(struct lru_ng * lru, sector_t key) {
 		kfree(node);
 		return false;
 	}
-	
+
+	printk("WE DID IT! DONE\n");
 	enforce_lru_size_limit(&lru->llru);
 
 	return true;
 }
 
 bool lru_ng_lookup(struct lru_ng * lru, sector_t key) {
+	printk("attempting lru lookup on sector %d\n", key);
+
 	struct lru_node *node;
 
 	hash_for_each_possible(lru->hasht, node, hnode, key) {
+		printk("hash iter %d\n", node->blknr);
 		if(node->blknr == key) {
 			if(!llru_del(&lru->llru, &node->lru)) {
 				pr_err_failure("llru_del");
@@ -128,10 +136,13 @@ bool lru_ng_lookup(struct lru_ng * lru, sector_t key) {
 				return false;
 			}
 
+			printk("okok found\n");
 			return true;
 		}
+		printk("iter\n");
 	}
 
+	printk("nothing to do.\n");
 	return false;
 }
 

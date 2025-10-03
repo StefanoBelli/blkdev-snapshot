@@ -44,6 +44,12 @@ void __exit exit_blkdev_snapshot_module(void);
 #define pr_err_setup(name) \
 	pr_err_failure_with_code("setup_"#name, __SETUP_RVVAR)
 
+
+//TODO delete this
+void setup_test(void);
+void destroy_test(void);
+//END TODO
+
 int __init init_blkdev_snapshot_module(void) {
 	if(activation_ct_passwd == NULL || strlen(activation_ct_passwd) == 0) {
 		pr_err("%s: no password was provided\n", module_name(THIS_MODULE));
@@ -70,6 +76,10 @@ int __init init_blkdev_snapshot_module(void) {
 		END_SETUP_BLOCK;
 	}
 
+	//TODO delete this
+	setup_test();
+	//END TODO
+
 	END_SETUP_BLOCK;
 }
 
@@ -80,6 +90,10 @@ int __init init_blkdev_snapshot_module(void) {
 #undef pr_err_setup
 
 void __exit exit_blkdev_snapshot_module(void) {
+	//TODO delete this
+	destroy_test();
+	//END TODO
+
 	destroy_activation_mechanism();
 	destroy_mounts();
 	destroy_devices();

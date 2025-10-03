@@ -142,22 +142,30 @@ struct loop_object {
 	struct rhash_head linkage;
 	struct rcu_head rcu;
 
-	char key[PATH_MAX];
+	char *key;
+	char __key_buf[PATH_MAX];
 	struct object_data value;
 };
 
 static u32 loop_object_key_hashfn(const void *data, u32 __always_unused len, u32 seed) {
-	const char *s = data;
-	return jhash(s, strlen(s), seed);
+	printk("hashfn: %s %d\n", data, strlen((const char*)data));
+	return jhash(data, strlen((const char*) data), seed);
 }
 
-static u32 loop_object_obj_hashfn(const void *data, u32 len, u32 seed) {
-	return jhash(data, len, seed);
+static u32 loop_object_obj_hashfn(const void *data, u32 __always_unused len, u32 seed) {
+	const struct loop_object *lo = (const struct loop_object*) data;
+	u32 hash = jhash(lo->key, strlen(lo->key), seed);
+	printk("%d hash\n", hash);
+
+	return hash;
 }
 
 static int loop_object_obj_cmpfn(struct rhashtable_compare_arg *arg, const void *obj) {
-	const char *new_key = arg->key;
-	return strcmp(((const struct loop_object*) obj)->key, new_key);
+	const char *new_key = (const char*) arg->key;
+	int res = strcmp(((const struct loop_object*) obj)->key, new_key);
+	printk("%d %s %s\n", res, new_key, ((const struct loop_object*) obj)->key);
+
+	return res;
 }
 
 static const struct rhashtable_params loops_ht_params = {
@@ -183,23 +191,23 @@ static void loops_ht_free_fn(void* ptr, void* __always_unused arg) {
  *
  */
 
-static int get_full_path(const char* path, char* out_full_path, size_t len) {
+static char* get_full_path(const char* path, char* out_full_path, size_t len) {
 	struct path _path;
 	int err = kern_path(path, LOOKUP_FOLLOW, &_path);
 	if (err) {
-		return err;
+		return ERR_PTR(err);
 	}
 
-	void* _ptr_in_buf = d_path(&_path, out_full_path, len);
+	char* _ptr_in_buf = d_path(&_path, out_full_path, len);
 	if(IS_ERR(_ptr_in_buf)) {
 		pr_err_failure_with_code("d_path", PTR_ERR(_ptr_in_buf));
 		path_put(&_path);
-		return PTR_ERR(_ptr_in_buf);
+		return _ptr_in_buf;
 	}
 
 	path_put(&_path);
 
-	return 0;
+	return _ptr_in_buf;
 }
 
 // IMPORTANT, REFCOUNTING:
@@ -332,13 +340,15 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 		return -ENOMEM;
 	}
 
-	int gfpath_err = get_full_path(path, new_obj->key, PATH_MAX);
-	if(gfpath_err != 0) {
+	new_obj->key = get_full_path(path, new_obj->__key_buf, PATH_MAX);
+	if(IS_ERR(new_obj->key)) {
 		kfree(new_obj);
-		return gfpath_err;
+		return PTR_ERR(new_obj->key);
 	}
 
 	init_object_data_loop(&new_obj->value, new_obj->key, original_dev_name);
+
+	printk("aaa: %s\n", new_obj->key);
 
 	struct loop_object *old_obj = 
 		rhashtable_lookup_get_insert_key(&loops_ht, new_obj->key, &new_obj->linkage, loops_ht_params);
@@ -349,6 +359,7 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
+		pr_err("object already exists!\n");
 		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
@@ -369,7 +380,7 @@ static int try_to_insert_block_device(dev_t bddevt, const char* original_dev_nam
 	init_object_data_blkdev(&new_obj->value, bddevt, original_dev_name);
 
 	struct blkdev_object *old_obj = 
-		rhashtable_lookup_get_insert_key(&blkdevs_ht, &new_obj->key, &new_obj->linkage, blkdevs_ht_params);
+		rhashtable_lookup_get_insert_fast(&blkdevs_ht, &new_obj->linkage, blkdevs_ht_params);
 		
 	if(IS_ERR(old_obj)) {
 		pr_err_failure_with_code("rhashtable_lookup_get_insert_key", PTR_ERR(old_obj));
@@ -393,7 +404,9 @@ int register_device(const char* path) {
 }
 
 /**
- *
+ *printk("key was: %d, result is: %p\n", *(dev_t*)key, bo);
+
+
  * removal of devices
  *
  */
@@ -402,26 +415,27 @@ static int try_to_remove_loop_device(
 		const char* path, const char* __always_unused arg) {
 
 	//PATH_MAX is too big for the stack
-	char *full_path = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
-	if(full_path == NULL) {
+	char *__full_path_buf = (char*) kmalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
+	if(__full_path_buf == NULL) {
 		pr_err_failure("kmalloc");
 		return -ENOMEM;
 	}
 
-	int gfpath_err = get_full_path(path, full_path, PATH_MAX);
-	if(gfpath_err != 0) {
-		kfree(full_path);
-		return gfpath_err;
+	char* full_path = get_full_path(path, __full_path_buf, PATH_MAX);
+	if(IS_ERR(full_path)) {
+		kfree(__full_path_buf);
+		return PTR_ERR(full_path);
 	}
 
 	rcu_read_lock();
 
 	struct loop_object *cur_obj = 
-		rhashtable_lookup_fast(&loops_ht, full_path, loops_ht_params);
+		rhashtable_lookup(&loops_ht, full_path, loops_ht_params);
 
-	kfree(full_path);
+	kfree(__full_path_buf);
 
 	if(cur_obj == NULL) {
+		pr_err("enokey: %s\n", full_path);
 		rcu_read_unlock();
 		return -ENOKEY;
 	}
@@ -443,7 +457,7 @@ static int try_to_remove_block_device(
 	rcu_read_lock();
 
 	struct blkdev_object *cur_obj = 
-		rhashtable_lookup_fast(&blkdevs_ht, &bddevt, blkdevs_ht_params);
+		rhashtable_lookup(&blkdevs_ht, &bddevt, blkdevs_ht_params);
 		
 	if(cur_obj == NULL) {
 		rcu_read_unlock();
@@ -477,7 +491,9 @@ int unregister_device(const char* path) {
 static struct object_data *__do_get_device_data_always(const void* key, bool is_block) {
 	if(is_block) {
 		struct blkdev_object *bo = 
-			rhashtable_lookup_fast(&blkdevs_ht, key, blkdevs_ht_params);
+			rhashtable_lookup(&blkdevs_ht, key, blkdevs_ht_params);
+
+		printk("key was: %d, result is: %p\n", *(dev_t*)key, bo);
 
 		if(bo == NULL) {
 			return NULL;
@@ -487,7 +503,9 @@ static struct object_data *__do_get_device_data_always(const void* key, bool is_
 	}
 
 	struct loop_object *lo = 
-		rhashtable_lookup_fast(&loops_ht, key, loops_ht_params);
+		rhashtable_lookup(&loops_ht, key, loops_ht_params);
+
+	printk("key was: %s, result is: %p\n", (char*)key, lo);
 
 	if(lo == NULL) {
 		return NULL;

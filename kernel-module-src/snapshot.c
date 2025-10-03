@@ -54,12 +54,14 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
 		return NULL;
 	}
 
+	umode_t dirmode = 0700;
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
-	d_new = vfs_mkdir(mnt_idmap(mnt), ino, d_new, 0600);
+	d_new = vfs_mkdir(mnt_idmap(mnt), ino, d_new, dirmode);
 #elif KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
-	d_new = vfs_mkdir(mnt_user_ns(mnt), ino, d_new, 0600);
+	d_new = vfs_mkdir(mnt_user_ns(mnt), ino, d_new, dirmode);
 #elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
-	d_new = vfs_mkdir(ino, d_new, 0600);
+	d_new = vfs_mkdir(ino, d_new, dirmode);
 #else
 #	error too old of a system... (vfs_mkdir is non-exported)
 #endif
@@ -101,6 +103,8 @@ static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry
 					module_name(THIS_MODULE), relname);
 			return NULL;
 		}
+
+		printk("found dir\n");
 
 		return existing_path.dentry;
 	}
@@ -194,7 +198,7 @@ static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devna
 			return false;
 		}
 
-		snprintf(subdirname, subdirname_len_wnul, "%s%s", devname, mountdate);
+		snprintf(subdirname, subdirname_len_wnul, "%s%s", kbasename(devname), mountdate);
 
 		// here, if res is false:
 		//	* no kmalloc of path_snapdir went through
@@ -439,6 +443,8 @@ static __filldir_t_ret_type lookup_dir_iter_cb(
 		return true;
 	}
 
+	printk("ITERATING ITEM %s\n", item);
+
 	struct dentry *dent = lkargs->path_snapdir->dentry;
 	struct vfsmount *vfsm = lkargs->path_snapdir->mnt;
 
@@ -460,7 +466,9 @@ static __filldir_t_ret_type lookup_dir_iter_cb(
 
 	struct snapblock_file_hdr hdr;
 	if(read_snapblock_mandatory_header(fsnapblock, &hdr)) {
-		if(hdr.magic == lkargs->blknr) {
+		printk("read mandatory header\n");
+		if(hdr.blknr == lkargs->blknr) {
+			printk("ok thats fine\n");
 			lkargs->found = true;
 			cb_res = false;
 		}
@@ -494,6 +502,7 @@ static int lookup_dir(struct path *path_snapdir, sector_t blknr, bool *out_found
 		.path_snapdir = path_snapdir
 	};
 
+	printk("LOOKUP DIR\n");
 	int err = iterate_dir(fdir, &lkargs.ctx);
 	if(err != 0) {
 		pr_err_failure_with_code("iterate_dir", err);
@@ -517,8 +526,8 @@ struct make_snapshot_work {
 	sector_t block_nr;
 	u64 blocksize;
 	char* block;
-	struct path *path_snapdir;
-	struct lru_ng *cached_blocks;
+	struct path **path_snapdir;
+	struct lru_ng **cached_blocks;
 	char original_dev_name[PATH_MAX];
 	char first_mount_date[MNT_FMT_DATE_LEN + 1];
 	struct work_struct work;
@@ -529,35 +538,37 @@ static void make_snapshot(struct work_struct *work) {
 		container_of(work, struct make_snapshot_work, work);
 
 	if(!ensure_cached_blocks_lru_ok(
-				&msw_args->cached_blocks)) {
+				msw_args->cached_blocks)) {
 		goto __make_snapshot_finish0;
 	}
 
-	if(lru_ng_lookup(msw_args->cached_blocks, msw_args->block_nr)) {
+	if(lru_ng_lookup(*msw_args->cached_blocks, msw_args->block_nr)) {
+		printk("found in LRU\n");
 		goto __make_snapshot_finish0;
 	}
 
 	if(!ensure_path_snapdir_ok(
-				&msw_args->path_snapdir, 
+				msw_args->path_snapdir, 
 				msw_args->original_dev_name, 
 				msw_args->first_mount_date)) {
 		goto __make_snapshot_finish0;
 	}
 
 	bool snapblock_found;
-	if(lookup_dir(msw_args->path_snapdir,msw_args->block_nr, &snapblock_found) != 0) {
-		goto __make_snapshot_finish0;
+	if(lookup_dir(*msw_args->path_snapdir,msw_args->block_nr, &snapblock_found) != 0) {
+		goto __make_snapshot_finish1;
 	}
 
 	if(!snapblock_found) {
 		DECLARE_SNAPBLOCK_FILE_HDR(file_hdr, msw_args->block_nr, msw_args->blocksize);
 		DECLARE_WRITE_SNAPBLOCK_ARGS(wargs, &file_hdr, msw_args->block, msw_args->blocksize);
-		if(write_snapblock(msw_args->path_snapdir, &wargs) != 0) {
-			goto __make_snapshot_finish0;
+		if(write_snapblock(*msw_args->path_snapdir, &wargs) != 0) {
+			goto __make_snapshot_finish1;
 		}
 	}
 
-	lru_ng_add(msw_args->cached_blocks, msw_args->block_nr);
+__make_snapshot_finish1:
+	lru_ng_add(*msw_args->cached_blocks, msw_args->block_nr);
 __make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);
@@ -588,8 +599,8 @@ static bool queue_snapshot_work(
 	INIT_WORK(&msw->work, make_snapshot);
 	msw->block_nr = blknr;
 	msw->blocksize = blksize;
-	msw->path_snapdir = obj->e.path_snapdir;
-	msw->cached_blocks = obj->e.cached_blocks;
+	msw->path_snapdir = &obj->e.path_snapdir;
+	msw->cached_blocks = &obj->e.cached_blocks;
 	memcpy(msw->first_mount_date, obj->e.first_mount_date, MNT_FMT_DATE_LEN + 1);
 	strscpy(msw->original_dev_name, obj->original_dev_name, PATH_MAX);
 	memcpy(msw->block, blk, sizeof(char) * blksize);
@@ -618,6 +629,7 @@ void* bdsnap_search_device(
 
 	struct object_data *data = get_device_data_always(&minfo);
 	if(data == NULL) {
+		printk("object data is NULL, anyway\n");
 		return NULL;
 	}
 
@@ -625,6 +637,7 @@ void* bdsnap_search_device(
 
 	// umount with MNT_DETACH may lose data
 	if(unlikely(data->e.n_currently_mounted == 0)) {
+		printk("no curr mount\n");
 		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
 		return NULL;
 	}
