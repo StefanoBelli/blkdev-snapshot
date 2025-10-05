@@ -43,6 +43,11 @@ llru_op_fpt llru_del = list_lru_del;
 #	error unsupported kernel version (missing typedef list_lru_walk_cb)
 #endif
 
+struct lru_ng {
+	struct list_lru llru;
+	DECLARE_HASHTABLE(hasht, LRU_NG__HT_BUCKET_BITS);
+};
+
 struct lru_node {
 	struct hlist_node hnode;
 	struct list_head lru;

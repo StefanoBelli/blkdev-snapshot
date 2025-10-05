@@ -45,10 +45,10 @@ static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 
 	if(epoch->n_currently_mounted == 1) {
 		struct timespec64 ts;
-    	struct tm tm;
+		struct tm tm;
 
-    	ktime_get_real_ts64(&ts);
-    	time64_to_tm(ts.tv_sec, 0, &tm);
+		ktime_get_real_ts64(&ts);
+		time64_to_tm(ts.tv_sec, 0, &tm);
 
 		snprintf(
 				epoch->first_mount_date, 

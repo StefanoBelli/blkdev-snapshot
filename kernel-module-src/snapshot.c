@@ -98,9 +98,14 @@ static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry
 		path_put(&existing_path);
 
 		if(!d_is_dir(existing_path.dentry)) {
-			pr_warn("%s: found existing object, \"%s\", "
-					"expecting it to be a directory, but it is not\n",
-					module_name(THIS_MODULE), relname);
+			pr_err("%s: **PAY ATTENTION HERE**\n"
+					"found existing object, \"%s\", "
+					"expecting it to be a directory, but it is not.\n"
+					"This is a human-made mistake.\n"
+					"Manual intervention is required:\n"
+					"issuing \"rm %s\" (from cwd of containing dir)\n"
+					"should be enough to allow auto fixing\n",
+					module_name(THIS_MODULE), relname, relname);
 			return NULL;
 		}
 
@@ -177,11 +182,16 @@ __init_path_snapdir_finish0:
 static bool ensure_path_snapdir_ok(struct path **path_snapdir, const char* devname, const char* mountdate) {
 	if(likely(*path_snapdir != NULL)) {
 		struct dentry *dent = (*path_snapdir)->dentry;
-		if(likely(d_is_positive(dent) && d_is_dir(dent))) {
+		if(likely(
+					d_really_is_positive(dent) && 
+					d_inode(dent)->i_nlink > 0 &&
+					d_is_dir(dent))) {
+
 			return true;
 		}
 
-		pr_warn("%s: existing snapblock directory is broken (devname=%s, mountdate=%s)\n",
+		pr_warn("%s: existing snapblock directory is broken "
+				"(devname=%s, mountdate=%s), trying automatic fixing...\n",
 				module_name(THIS_MODULE), devname, mountdate);
 
 		path_put(*path_snapdir);
@@ -418,10 +428,51 @@ __write_snapblock_finish0:
  *
  */
 
-struct lookup_dir_args {
-	bool found;
-	sector_t blknr;
-	struct path *path_snapdir;
+struct fillist_node {
+	char *name;
+	struct list_head node;
+};
+
+static bool lookup_valid_dir_entry(struct path *path, sector_t blknr, struct list_head *list) {
+	struct fillist_node *cur;
+	list_for_each_entry(cur, list, node) {
+		struct dentry *dent = path->dentry;
+		struct vfsmount *vfsm = path->mnt;
+
+		struct path path_snapblock;
+		int err = vfs_path_lookup(dent, vfsm, cur->name, 0, &path_snapblock);
+		if(err != 0) {
+			pr_err_failure_with_code("vfs_path_lookup", err);
+			continue;
+		}
+
+		struct file *fsnapblock = dentry_open(&path_snapblock, O_RDONLY, current->cred);
+		if(IS_ERR(fsnapblock)) {
+			pr_err_failure_with_code("dentry_open", PTR_ERR(fsnapblock));
+			path_put(&path_snapblock);
+			continue;
+		}
+
+		bool found = false;
+
+		struct snapblock_file_hdr hdr;
+		if(read_snapblock_mandatory_header(fsnapblock, &hdr)) {
+			found = hdr.blknr == blknr;
+		}
+
+		fput(fsnapblock);
+		path_put(&path_snapblock);
+
+		if(found) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+struct filldir_args {
+	struct list_head *fillist;
 	struct dir_context ctx;
 };
 
@@ -431,53 +482,41 @@ typedef bool __filldir_t_ret_type;
 typedef int __filldir_t_ret_type;
 #endif
 
-static __filldir_t_ret_type lookup_dir_iter_cb(
+static __filldir_t_ret_type filldir_iter_cb(
 		struct dir_context *ctx, const char* item, 
-		int __always_unused namelen, loff_t __always_unused offset, 
+		int namelen, loff_t __always_unused offset, 
 		u64 __always_unused ino, unsigned d_type) {
 
-	struct lookup_dir_args *lkargs = 
-		container_of(ctx, struct lookup_dir_args, ctx);
-
 	if(d_type != DT_REG) {
+		goto __filldir_iter_cb_finish0;
+	}
+
+	struct filldir_args *dfargs = container_of(ctx, struct filldir_args, ctx);
+
+	struct fillist_node *lnode = kmalloc(sizeof(struct fillist_node), GFP_KERNEL);
+	if(lnode == NULL) {
+		pr_err_failure("kmalloc");
+		goto __filldir_iter_cb_finish0;
+	}
+
+	lnode->name = kzalloc(namelen + 1, GFP_KERNEL);
+	if(lnode->name == NULL) {
+		pr_err_failure("kzalloc");
+		kfree(lnode);
+		goto __filldir_iter_cb_finish0;
+	}
+
+	memcpy(lnode->name, item, namelen);
+
+	list_add_tail(&lnode->node, dfargs->fillist);
+
+__filldir_iter_cb_finish0:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 		return true;
-	}
+#else
+		return 1;
+#endif
 
-	printk("ITERATING ITEM %s\n", item);
-
-	struct dentry *dent = lkargs->path_snapdir->dentry;
-	struct vfsmount *vfsm = lkargs->path_snapdir->mnt;
-
-	struct path path_snapblock;
-	int err = vfs_path_lookup(dent, vfsm, item, 0, &path_snapblock);
-	if(err != 0) {
-		pr_err_failure_with_code("vfs_path_lookup", err);
-		return true;
-	}
-
-	struct file *fsnapblock = dentry_open(&path_snapblock, O_RDONLY, current->cred);
-	if(IS_ERR(fsnapblock)) {
-		pr_err_failure_with_code("dentry_open", PTR_ERR(fsnapblock));
-		path_put(&path_snapblock);
-		return true;
-	}
-
-	bool cb_res = true;
-
-	struct snapblock_file_hdr hdr;
-	if(read_snapblock_mandatory_header(fsnapblock, &hdr)) {
-		printk("read mandatory header\n");
-		if(hdr.blknr == lkargs->blknr) {
-			printk("ok thats fine\n");
-			lkargs->found = true;
-			cb_res = false;
-		}
-	}
-
-	fput(fsnapblock);
-	path_put(&path_snapblock);
-
-	return cb_res;
 }
 
 static int lookup_dir(struct path *path_snapdir, sector_t blknr, bool *out_found) {
@@ -489,29 +528,44 @@ static int lookup_dir(struct path *path_snapdir, sector_t blknr, bool *out_found
 		return PTR_ERR(fdir);
 	}
 
-	struct lookup_dir_args lkargs = {
-		.blknr = blknr,
-		.found = false,
+	struct list_head *list = kmalloc(sizeof(struct list_head), GFP_KERNEL);
+	if(list == NULL) {
+		pr_err_failure("kmalloc");
+		fput(fdir);
+		return -ENOMEM;
+	}
+
+	INIT_LIST_HEAD(list);
+
+	struct filldir_args dfargs = {
+		.fillist = list,
 		.ctx = {
-			.actor = lookup_dir_iter_cb,
+			.actor = filldir_iter_cb,
 			.pos = 0
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
 			,.count = 0
 #endif
-		},
-		.path_snapdir = path_snapdir
+		}
 	};
 
-	printk("LOOKUP DIR\n");
-	int err = iterate_dir(fdir, &lkargs.ctx);
+	int err = iterate_dir(fdir, &dfargs.ctx);
 	if(err != 0) {
 		pr_err_failure_with_code("iterate_dir", err);
 		goto __lookup_dir_finish0;
 	}
 
-	*out_found = lkargs.found;
+	*out_found = lookup_valid_dir_entry(path_snapdir, blknr, list);
+
+	struct fillist_node *pos;
+	struct fillist_node *tmp;
+
+	list_for_each_entry_safe(pos, tmp, list, node) {
+		list_del(&pos->node);
+		kfree(pos);
+	}
 
 __lookup_dir_finish0:
+	kfree(list);
 	fput(fdir);
 	return err;
 }
@@ -543,7 +597,6 @@ static void make_snapshot(struct work_struct *work) {
 	}
 
 	if(lru_ng_lookup(*msw_args->cached_blocks, msw_args->block_nr)) {
-		printk("found in LRU\n");
 		goto __make_snapshot_finish0;
 	}
 
@@ -556,18 +609,17 @@ static void make_snapshot(struct work_struct *work) {
 
 	bool snapblock_found;
 	if(lookup_dir(*msw_args->path_snapdir,msw_args->block_nr, &snapblock_found) != 0) {
-		goto __make_snapshot_finish1;
+		goto __make_snapshot_finish0;
 	}
 
 	if(!snapblock_found) {
 		DECLARE_SNAPBLOCK_FILE_HDR(file_hdr, msw_args->block_nr, msw_args->blocksize);
 		DECLARE_WRITE_SNAPBLOCK_ARGS(wargs, &file_hdr, msw_args->block, msw_args->blocksize);
 		if(write_snapblock(*msw_args->path_snapdir, &wargs) != 0) {
-			goto __make_snapshot_finish1;
+			goto __make_snapshot_finish0;
 		}
 	}
 
-__make_snapshot_finish1:
 	lru_ng_add(*msw_args->cached_blocks, msw_args->block_nr);
 __make_snapshot_finish0:
 	kfree(msw_args->block);

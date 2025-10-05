@@ -7,10 +7,7 @@
 #define LRU_NG__HT_BUCKET_BITS 16
 #define LRU_NG__LRU_MAX_ENTRIES (1 << LRU_NG__HT_BUCKET_BITS)
 
-struct lru_ng {
-	struct list_lru llru;
-	DECLARE_HASHTABLE(hasht, LRU_NG__HT_BUCKET_BITS);
-};
+struct lru_ng; //opaque ptr
 
 struct lru_ng* lru_ng_alloc_and_init(void);
 bool lru_ng_lookup(struct lru_ng * lru, sector_t key);

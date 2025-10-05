@@ -4,6 +4,7 @@
 #include <pr-err-failure.h>
 
 static struct delayed_work gdwork;
+static atomic_t sector_idx = ATOMIC_INIT(0);
 
 static void workcb( struct work_struct *work) {
 	pr_warn("%s: testing now...\n", module_name(THIS_MODULE));
@@ -27,8 +28,11 @@ static void workcb( struct work_struct *work) {
 
 	char datablock[] = { 'c','i','a','o' };
 
-	if(bdsnap_make_snapshot(handle, datablock, 0, sizeof(datablock), cpu_flags)) {
-		pr_warn("%s: did a snapshot!\n", module_name(THIS_MODULE));
+	int sek = atomic_read(&sector_idx);
+
+	if(bdsnap_make_snapshot(handle, datablock, sek, sizeof(datablock), cpu_flags)) {
+		pr_warn("%s: did a snapshot of sector %d\n", module_name(THIS_MODULE), sek);
+		atomic_inc(&sector_idx);
 	} else {
 		pr_warn("%s: bdsnap_make_snapshot goes brrrr\n", module_name(THIS_MODULE));
 	}
