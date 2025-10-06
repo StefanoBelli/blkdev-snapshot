@@ -43,11 +43,24 @@ llru_op_fpt llru_del = list_lru_del;
 #	error unsupported kernel version (missing typedef list_lru_walk_cb)
 #endif
 
+// spatial considerations
+//
+// for each device, struct lru_ng will occupy:
+// approx 2-3MB of memory
 struct lru_ng {
 	struct list_lru llru;
 	DECLARE_HASHTABLE(hasht, LRU_NG__HT_BUCKET_BITS);
 };
 
+// each struct lru_node takes 40B which is created once a block is snapshotted
+// even if the LRU cache is full, for 18 bits hashtable: 
+// approx 11MB for each device
+//
+// Considering that normally a block is 4096 B, 2^18 lru_nodes will
+// gurantee a large LRU cache with O(1) access which spans 1GB of device storage
+// 
+// Considering that more than 1 device can be registered, to reach 1 GB of total
+// memory used by the blkdev_snapshot module it will take 100 registered devices (LRUs are full)
 struct lru_node {
 	struct hlist_node hnode;
 	struct list_head lru;
@@ -79,6 +92,9 @@ static enum lru_status evict_cb(LIST_LRU_WALK_CB_ARGS) {
 	struct lru_node *node = 
 		container_of(item, struct lru_node, lru);
 
+	//TODO remove this
+	//printk("evicting %lld...\n", node->blknr);
+
 	list_del_init(&node->lru);
 	hash_del(&node->hnode);
 	kfree(node);
@@ -90,6 +106,8 @@ static inline void enforce_lru_size_limit(struct list_lru * lru) {
 	if (list_lru_count(lru) <= LRU_NG__LRU_MAX_ENTRIES) {
 		return;
 	}
+
+	printk("enforce size limit required: %ld\n", list_lru_count(lru) - LRU_NG__LRU_MAX_ENTRIES);
 
 	list_lru_walk(lru, evict_cb, NULL, 1);
 }

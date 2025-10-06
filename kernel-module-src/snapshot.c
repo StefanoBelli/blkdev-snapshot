@@ -681,7 +681,6 @@ void* bdsnap_search_device(
 
 	struct object_data *data = get_device_data_always(&minfo);
 	if(data == NULL) {
-		printk("object data is NULL, anyway\n");
 		return NULL;
 	}
 
@@ -689,7 +688,6 @@ void* bdsnap_search_device(
 
 	// umount with MNT_DETACH may lose data
 	if(unlikely(data->e.n_currently_mounted == 0)) {
-		printk("no curr mount\n");
 		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
 		return NULL;
 	}
@@ -713,11 +711,12 @@ bool bdsnap_make_snapshot(
 	bool ret = false;
 
 	if(data != NULL && !data->wq_is_destroyed && !spin_is_locked(&data->wq_destroy_lock)) {
-		spin_lock(&data->wq_destroy_lock);
+		unsigned long flags;
+		spin_lock_irqsave(&data->wq_destroy_lock, flags);
 		if(!data->wq_is_destroyed) {
 			ret = queue_snapshot_work(data, block, blocknr, blocksize);
 		}
-		spin_unlock(&data->wq_destroy_lock);
+		spin_unlock_irqrestore(&data->wq_destroy_lock, flags);
 	}
 
 	spin_unlock_irqrestore(&data->cleanup_epoch_lock, cpu_flags);

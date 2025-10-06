@@ -4,7 +4,7 @@
 #include <linux/list_lru.h>
 #include <linux/hashtable.h>
 
-#define LRU_NG__HT_BUCKET_BITS 16
+#define LRU_NG__HT_BUCKET_BITS 18
 #define LRU_NG__LRU_MAX_ENTRIES (1 << LRU_NG__HT_BUCKET_BITS)
 
 struct lru_ng; //opaque ptr

@@ -8,7 +8,7 @@
 #include <devices.h>
 #include <lru-ng.h>
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 #error your version is not compat (reason: kretprobes hooked funcs)
 #endif
 
@@ -83,7 +83,7 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 		data->e.path_snapdir = NULL;
 		data->e.cached_blocks = NULL;
 
-		//we hold the general lock, at this time the wq can be destroyed or not
+		//we hold the general lock, at this time the wq is destroyed or not
 		//but nothing can happen while we have the lock
 		if(!data->wq_is_destroyed) {
 			struct finish_epoch_work *few = (struct finish_epoch_work*) 
