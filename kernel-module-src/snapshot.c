@@ -260,7 +260,7 @@ struct snapblock_file_hdr {
 	u64 payld_off;
 } __packed;
 
-#define DECLARE_SNAPBLOCK_FILE_HDR( \
+#define DEFINE_SNAPBLOCK_FILE_HDR( \
 		_mand_hdr_name, \
 		__block_num, \
 		__payload_size) \
@@ -272,12 +272,14 @@ struct snapblock_file_hdr {
 	(_mand_hdr_name).payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
 	(_mand_hdr_name).payld_off = sizeof(struct snapblock_file_hdr)
 
-static bool read_snapblock_mandatory_header(struct file *filp, 
-		struct snapblock_file_hdr *out_hdr) {
+static bool read_snapblock_mandatory_header(
+		struct file *filp, 
+		struct snapblock_file_hdr *out_hdr,
+		loff_t start_hdr_off) {
 
 	size_t nrbytes = sizeof(struct snapblock_file_hdr);
 
-	loff_t pos = 0;
+	loff_t pos = start_hdr_off;
 	size_t read_bytes = kernel_read(filp, (char*) out_hdr, nrbytes, &pos);
 
 	if(read_bytes != nrbytes) {
@@ -291,24 +293,12 @@ static bool read_snapblock_mandatory_header(struct file *filp,
 	return true;
 }
 
-static bool create_snapblock_file(u64 blknr, 
-		struct file **out_filp, const struct path *path_snapdir) {
-
-	char *namebuf = kmalloc(PATH_MAX, GFP_KERNEL);
-	if(unlikely(namebuf == NULL)) {
-		pr_err_failure("kmalloc");
-		return false;
-	}
-
-	snprintf(namebuf, PATH_MAX, "snapblock-%lld", blknr);
-
+static bool create_snapblocks_file(struct file **out_filp, const struct path *path_snapdir) {
 	struct inode *par_ino = d_inode(path_snapdir->dentry);
 
 	inode_lock(par_ino);
 
-	struct dentry *d_new = new_dentry(namebuf, path_snapdir->dentry, path_snapdir->mnt);
-
-	kfree(namebuf);
+	struct dentry *d_new = new_dentry("snapblocks", path_snapdir->dentry, path_snapdir->mnt);
 
 	if(IS_ERR(d_new)) {
 		pr_err_failure_with_code("new_dentry", PTR_ERR(d_new));
@@ -316,12 +306,14 @@ static bool create_snapblock_file(u64 blknr,
 		return false;
 	}
 
+	umode_t mode = FMODE_READ | FMODE_WRITE;
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
-	int err = vfs_create(mnt_idmap(path_snapdir->mnt), par_ino, d_new, FMODE_WRITE, true);
+	int err = vfs_create(mnt_idmap(path_snapdir->mnt), par_ino, d_new, mode, true);
 #elif KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
-	int err = vfs_create(mnt_user_ns(path_snapdir->mnt), par_ino, d_new, FMODE_WRITE, true);
+	int err = vfs_create(mnt_user_ns(path_snapdir->mnt), par_ino, d_new, mode, true);
 #elif KERNEL-VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
-	int err = vfs_create(par_ino, d_new, FMODE_WRITE, true);
+	int err = vfs_create(par_ino, d_new, mode, true);
 #else
 #	error missing vfs_create (non-exported symbol)
 #endif
@@ -340,7 +332,7 @@ static bool create_snapblock_file(u64 blknr,
 		.mnt = path_snapdir->mnt
 	};
 
-	*out_filp = dentry_open(&path_new_snapblock, O_WRONLY, current->cred);
+	*out_filp = dentry_open(&path_new_snapblock, O_RDWR | O_APPEND, current->cred);
 
 	dput(d_new);
 
@@ -362,7 +354,7 @@ struct write_snapblock_args {
 	size_t payload_size;
 };
 
-#define DECLARE_WRITE_SNAPBLOCK_ARGS( \
+#define DEFINE_WRITE_SNAPBLOCK_ARGS( \
 		_args_name, \
 		__mand_hdr, \
 		__payload, \
@@ -375,24 +367,14 @@ struct write_snapblock_args {
 	(_args_name).payload = ((const void*)(__payload)); \
 	(_args_name).payload_size = (__payload_size)
 
-static bool write_snapblock(const struct path *path_snapdir,
-		const struct write_snapblock_args *wargs) {
-
-	struct file *filp;
-	u64 blknr = wargs->mandatory_hdr->blknr;
-
-	if(!create_snapblock_file(blknr, &filp, path_snapdir)) {
-		return false;
-	}
-
-	loff_t off = 0;
+static bool write_snapblock(struct file *filp, const struct write_snapblock_args *wargs) {
 	size_t wrote;
 	bool rv = false;
 
 	size_t mandatory_hdr_size = sizeof(struct snapblock_file_hdr);
 
 	wrote = kernel_write(
-			filp, wargs->mandatory_hdr, mandatory_hdr_size, &off);
+			filp, wargs->mandatory_hdr, mandatory_hdr_size, NULL);
 	if(wrote != mandatory_hdr_size) {
 		pr_err_failure_with_code("kernel_write", wrote);
 		goto __write_snapblock_finish0;
@@ -401,7 +383,7 @@ static bool write_snapblock(const struct path *path_snapdir,
 	if(wargs->extended_hdr != NULL && wargs->extended_hdr_size > 0) {
 
 		wrote = kernel_write(
-				filp, wargs->extended_hdr, wargs->extended_hdr_size, &off);
+				filp, wargs->extended_hdr, wargs->extended_hdr_size, NULL);
 		if(wrote != wargs->extended_hdr_size) {
 			pr_err_failure_with_code("kernel_write", wrote);
 			goto __write_snapblock_finish0;
@@ -409,7 +391,7 @@ static bool write_snapblock(const struct path *path_snapdir,
 	}
 
 	wrote = kernel_write(
-			filp, wargs->payload, wargs->payload_size, &off);
+			filp, wargs->payload, wargs->payload_size, NULL);
 	if(wrote != wargs->payload_size) {
 		pr_err_failure_with_code("kernel_write", wrote);
 		goto __write_snapblock_finish0;
@@ -418,158 +400,55 @@ static bool write_snapblock(const struct path *path_snapdir,
 	rv = true;
 
 __write_snapblock_finish0:
-	fput(filp);
 	return rv;
 }
 
-/**
- *
- * directory lookup
- *
- */
+static bool file_lookup(u64 blknr, struct file *filp) {
+	struct snapblock_file_hdr blk_header;
+	loff_t foff = 0;
 
-struct fillist_node {
-	char *name;
-	struct list_head node;
-};
-
-static bool lookup_valid_dir_entry(struct path *path, sector_t blknr, struct list_head *list) {
-	struct fillist_node *cur;
-	list_for_each_entry(cur, list, node) {
-		struct dentry *dent = path->dentry;
-		struct vfsmount *vfsm = path->mnt;
-
-		struct path path_snapblock;
-		int err = vfs_path_lookup(dent, vfsm, cur->name, 0, &path_snapblock);
-		if(err != 0) {
-			pr_err_failure_with_code("vfs_path_lookup", err);
-			continue;
-		}
-
-		struct file *fsnapblock = dentry_open(&path_snapblock, O_RDONLY, current->cred);
-		if(IS_ERR(fsnapblock)) {
-			pr_err_failure_with_code("dentry_open", PTR_ERR(fsnapblock));
-			path_put(&path_snapblock);
-			continue;
-		}
-
-		bool found = false;
-
-		struct snapblock_file_hdr hdr;
-		if(read_snapblock_mandatory_header(fsnapblock, &hdr)) {
-			found = hdr.blknr == blknr;
-		}
-
-		fput(fsnapblock);
-		path_put(&path_snapblock);
-
-		if(found) {
+	while(read_snapblock_mandatory_header(filp, &blk_header, foff)) {
+		if(blk_header.blknr == blknr) {
 			return true;
 		}
+
+		foff += blk_header.payld_off + blk_header.payldsiz;
 	}
 
 	return false;
 }
 
-struct filldir_args {
-	struct list_head *fillist;
-	struct dir_context ctx;
-};
+/**
+ *
+ * ensure snapblocks file ok
+ *
+ */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
-typedef bool __filldir_t_ret_type;
-#else
-typedef int __filldir_t_ret_type;
-#endif
+static bool ensure_snapblocks_file_ok(const struct path *path_snapdir, struct file **out_filp) {
+	struct path path_snapblocks;
 
-static __filldir_t_ret_type filldir_iter_cb(
-		struct dir_context *ctx, const char* item, 
-		int namelen, loff_t __always_unused offset, 
-		u64 __always_unused ino, unsigned d_type) {
-
-	if(d_type != DT_REG) {
-		goto __filldir_iter_cb_finish0;
-	}
-
-	struct filldir_args *dfargs = container_of(ctx, struct filldir_args, ctx);
-
-	struct fillist_node *lnode = kmalloc(sizeof(struct fillist_node), GFP_KERNEL);
-	if(lnode == NULL) {
-		pr_err_failure("kmalloc");
-		goto __filldir_iter_cb_finish0;
-	}
-
-	lnode->name = kzalloc(namelen + 1, GFP_KERNEL);
-	if(lnode->name == NULL) {
-		pr_err_failure("kzalloc");
-		kfree(lnode);
-		goto __filldir_iter_cb_finish0;
-	}
-
-	memcpy(lnode->name, item, namelen);
-
-	list_add_tail(&lnode->node, dfargs->fillist);
-
-__filldir_iter_cb_finish0:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
-		return true;
-#else
-		return 1;
-#endif
-
-}
-
-static int lookup_dir(struct path *path_snapdir, sector_t blknr, bool *out_found) {
-	*out_found = false;
-
-	struct file *fdir = dentry_open(path_snapdir, O_RDONLY, current->cred);
-	if(IS_ERR(fdir)) {
-		pr_err_failure_with_code("dentry_open", PTR_ERR(fdir));
-		return PTR_ERR(fdir);
-	}
-
-	struct list_head *list = kmalloc(sizeof(struct list_head), GFP_KERNEL);
-	if(list == NULL) {
-		pr_err_failure("kmalloc");
-		fput(fdir);
-		return -ENOMEM;
-	}
-
-	INIT_LIST_HEAD(list);
-
-	struct filldir_args dfargs = {
-		.fillist = list,
-		.ctx = {
-			.actor = filldir_iter_cb,
-			.pos = 0
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
-			,.count = 0
-#endif
+	if(vfs_path_lookup(path_snapdir->dentry, path_snapdir->mnt, "snapblocks", 0, &path_snapblocks) == 0) {
+		if(!d_is_file(path_snapblocks.dentry)) {
+			pr_err("%s: **PAY ATTENTION HERE**\n"
+					"found existing object, \"snapblocks\", "
+					"expecting it to be a regular file, but it is not.\n"
+					"This is a human-made mistake.\n"
+					"Manual intervention is required:\n"
+					"issuing \"rm snapblocks [...whatever rmflags needed here...]\" "
+					"(from cwd of containing dir)\n"
+					"should be enough to allow auto fixing\n",
+					module_name(THIS_MODULE));
+			return false;
 		}
-	};
 
-	int err = iterate_dir(fdir, &dfargs.ctx);
-	if(err != 0) {
-		pr_err_failure_with_code("iterate_dir", err);
-		goto __lookup_dir_finish0;
+		*out_filp = dentry_open(&path_snapblocks, O_RDWR | O_APPEND, current->cred);
+		path_put(&path_snapblocks);
+
+		return true;
 	}
 
-	*out_found = lookup_valid_dir_entry(path_snapdir, blknr, list);
-
-	struct fillist_node *pos;
-	struct fillist_node *tmp;
-
-	list_for_each_entry_safe(pos, tmp, list, node) {
-		list_del(&pos->node);
-		kfree(pos);
-	}
-
-__lookup_dir_finish0:
-	kfree(list);
-	fput(fdir);
-	return err;
+	return create_snapblocks_file(out_filp, path_snapdir);
 }
-
 /**
  *
  * snapshot deferred work
@@ -596,7 +475,9 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	if(lru_ng_lookup(*msw_args->cached_blocks, msw_args->block_nr)) {
+	if(lru_ng_lookup(
+				*msw_args->cached_blocks, 
+				msw_args->block_nr)) {
 		goto __make_snapshot_finish0;
 	}
 
@@ -607,20 +488,40 @@ static void make_snapshot(struct work_struct *work) {
 		goto __make_snapshot_finish0;
 	}
 
-	bool snapblock_found;
-	if(lookup_dir(*msw_args->path_snapdir,msw_args->block_nr, &snapblock_found) != 0) {
+	struct file *snapblocks_filp;
+	if(!ensure_snapblocks_file_ok(
+				*msw_args->path_snapdir,
+				&snapblocks_filp)) {
 		goto __make_snapshot_finish0;
 	}
 
-	if(!snapblock_found) {
-		DECLARE_SNAPBLOCK_FILE_HDR(file_hdr, msw_args->block_nr, msw_args->blocksize);
-		DECLARE_WRITE_SNAPBLOCK_ARGS(wargs, &file_hdr, msw_args->block, msw_args->blocksize);
-		if(write_snapblock(*msw_args->path_snapdir, &wargs) != 0) {
-			goto __make_snapshot_finish0;
-		}
+	if(file_lookup(
+				msw_args->block_nr, 
+				snapblocks_filp))  {
+		goto __make_snapshot_finish2;
 	}
 
+	DEFINE_SNAPBLOCK_FILE_HDR(file_hdr, 
+			msw_args->block_nr, 
+			msw_args->blocksize);
+
+	DEFINE_WRITE_SNAPBLOCK_ARGS(wargs, 
+			&file_hdr, 
+			msw_args->block, 
+			msw_args->blocksize);
+
+	if(write_snapblock(
+				snapblocks_filp, 
+				&wargs) != 0) {
+		goto __make_snapshot_finish1;
+	}
+
+	//need to add to LRU anyway
+
+__make_snapshot_finish2:
 	lru_ng_add(*msw_args->cached_blocks, msw_args->block_nr);
+__make_snapshot_finish1:
+	fput(snapblocks_filp);
 __make_snapshot_finish0:
 	kfree(msw_args->block);
 	kfree(msw_args);

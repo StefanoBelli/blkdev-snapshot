@@ -1,4 +1,3 @@
-/*
 #include <linux/blkdev.h>
 #include <bdsnap/bdsnap.h>
 #include <pr-err-failure.h>
@@ -43,8 +42,8 @@ __my_hrtimer_callback_finish1:
 __my_hrtimer_callback_finish0:
 	schedule_delayed_work(to_delayed_work(work), msecs_to_jiffies(500));
 }
-*/
 
+/*
 #include <lru-ng.h>
 
 
@@ -179,19 +178,17 @@ __test_lru_mru_failure:
 	lru_ng_cleanup_and_destroy(lru);
 	return __rv;
 }
-
+*/
 void setup_test(void) {
-	/*
 	INIT_DELAYED_WORK(&gdwork, workcb);
     schedule_delayed_work(&gdwork, msecs_to_jiffies(5000));
-    */
-    
+
+    /*
     if(!test_lru_mru_lru()) {
     	pr_err("test lru mru lru failed\n");
     	return;
     }
 
-    /*
     if(!test_lru_enforce_size_limit()) {
     	pr_err("test lru enforce size limit failed\n");
     	return;
@@ -209,7 +206,7 @@ void setup_test(void) {
 
 
 
-    pr_info("all lru tests passed\n");
+    //pr_info("all lru tests passed\n");
 }
 
 void destroy_test(void) {
