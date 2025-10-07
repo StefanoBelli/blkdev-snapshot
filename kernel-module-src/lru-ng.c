@@ -1,5 +1,6 @@
 #include <linux/version.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include <lru-ng.h>
 #include <pr-err-failure.h>
@@ -73,9 +74,21 @@ static inline bool lru_ng_init(struct lru_ng* lru) {
 }
 
 struct lru_ng *lru_ng_alloc_and_init(void) {
-	struct lru_ng *lru = kzalloc(sizeof(struct lru_ng), GFP_KERNEL);
+	struct lru_ng *lru;
+
+	const char *allokname;
+	size_t alloksize = sizeof(struct lru_ng);
+
+	if(alloksize > PAGE_SIZE) {
+		lru = vmalloc(alloksize);
+		allokname = "vmalloc";
+	} else {
+		lru = kmalloc(sizeof(struct lru_ng), GFP_KERNEL);
+		allokname = "kmalloc";
+	}
+
 	if(lru == NULL) {
-		pr_err_failure("kzalloc");
+		pr_err_failure(allokname);
 		return NULL;
 	}
 
@@ -92,9 +105,6 @@ static enum lru_status evict_cb(LIST_LRU_WALK_CB_ARGS) {
 	struct lru_node *node = 
 		container_of(item, struct lru_node, lru);
 
-	//TODO remove this
-	//printk("evicting %lld...\n", node->blknr);
-
 	list_del_init(&node->lru);
 	hash_del(&node->hnode);
 	kfree(node);
@@ -107,13 +117,10 @@ static inline void enforce_lru_size_limit(struct list_lru * lru) {
 		return;
 	}
 
-	printk("enforce size limit required: %ld\n", list_lru_count(lru) - LRU_NG__LRU_MAX_ENTRIES);
-
 	list_lru_walk(lru, evict_cb, NULL, 1);
 }
 
 bool lru_ng_add(struct lru_ng * lru, sector_t key) {
-	printk("attempting to add key %d\n", key);
 	struct lru_node *node = kzalloc(sizeof(struct lru_node), GFP_KERNEL);
 	if(node == NULL) {
 		pr_err_failure("kmalloc");
@@ -126,8 +133,6 @@ bool lru_ng_add(struct lru_ng * lru, sector_t key) {
 	INIT_LIST_HEAD(&node->lru);
 	node->blknr = key;
 
-	printk("hash empty: %d\n", hash_empty(lru->hasht));
-
 	if(!llru_add(&lru->llru, &node->lru)) {
 		pr_err_failure("llru_add");
 		hash_del(&node->hnode);
@@ -135,19 +140,15 @@ bool lru_ng_add(struct lru_ng * lru, sector_t key) {
 		return false;
 	}
 
-	printk("WE DID IT! DONE\n");
 	enforce_lru_size_limit(&lru->llru);
 
 	return true;
 }
 
 bool lru_ng_lookup(struct lru_ng * lru, sector_t key) {
-	printk("attempting lru lookup on sector %d\n", key);
-
 	struct lru_node *node;
 
 	hash_for_each_possible(lru->hasht, node, hnode, key) {
-		printk("hash iter %d\n", node->blknr);
 		if(node->blknr == key) {
 			if(!llru_del(&lru->llru, &node->lru)) {
 				pr_err_failure("llru_del");
@@ -159,13 +160,10 @@ bool lru_ng_lookup(struct lru_ng * lru, sector_t key) {
 				return false;
 			}
 
-			printk("okok found\n");
 			return true;
 		}
-		printk("iter\n");
 	}
 
-	printk("nothing to do.\n");
 	return false;
 }
 
@@ -176,5 +174,11 @@ static inline void lru_ng_cleanup(struct lru_ng* lru) {
 
 void lru_ng_cleanup_and_destroy(struct lru_ng* lru) {
 	lru_ng_cleanup(lru);
-	kfree(lru);
+
+	size_t alloksize = sizeof(struct lru_ng);
+	if(alloksize > PAGE_SIZE) {
+		vfree(lru);
+	} else {
+		kfree(lru);
+	}
 }
