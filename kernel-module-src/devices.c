@@ -148,14 +148,12 @@ struct loop_object {
 };
 
 static u32 loop_object_key_hashfn(const void *data, u32 __always_unused len, u32 seed) {
-	printk("hashfn: %s %d\n", data, strlen((const char*)data));
 	return jhash(data, strlen((const char*) data), seed);
 }
 
 static u32 loop_object_obj_hashfn(const void *data, u32 __always_unused len, u32 seed) {
 	const struct loop_object *lo = (const struct loop_object*) data;
 	u32 hash = jhash(lo->key, strlen(lo->key), seed);
-	printk("%d hash\n", hash);
 
 	return hash;
 }
@@ -163,7 +161,6 @@ static u32 loop_object_obj_hashfn(const void *data, u32 __always_unused len, u32
 static int loop_object_obj_cmpfn(struct rhashtable_compare_arg *arg, const void *obj) {
 	const char *new_key = (const char*) arg->key;
 	int res = strcmp(((const struct loop_object*) obj)->key, new_key);
-	printk("%d %s %s\n", res, new_key, ((const struct loop_object*) obj)->key);
 
 	return res;
 }
@@ -348,7 +345,6 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 
 	init_object_data_loop(&new_obj->value, new_obj->key, original_dev_name);
 
-	printk("aaa: %s\n", new_obj->key);
 
 	struct loop_object *old_obj = 
 		rhashtable_lookup_get_insert_key(&loops_ht, new_obj->key, &new_obj->linkage, loops_ht_params);
@@ -359,7 +355,6 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
-		pr_err("object already exists!\n");
 		cleanup_object_data_nolocking(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
@@ -404,9 +399,7 @@ int register_device(const char* path) {
 }
 
 /**
- *printk("key was: %d, result is: %p\n", *(dev_t*)key, bo);
-
-
+ * 
  * removal of devices
  *
  */
@@ -435,7 +428,6 @@ static int try_to_remove_loop_device(
 	kfree(__full_path_buf);
 
 	if(cur_obj == NULL) {
-		pr_err("enokey: %s\n", full_path);
 		rcu_read_unlock();
 		return -ENOKEY;
 	}
@@ -493,8 +485,6 @@ static struct object_data *__do_get_device_data_always(const void* key, bool is_
 		struct blkdev_object *bo = 
 			rhashtable_lookup(&blkdevs_ht, key, blkdevs_ht_params);
 
-		printk("key was: %d, result is: %p\n", *(dev_t*)key, bo);
-
 		if(bo == NULL) {
 			return NULL;
 		}
@@ -504,8 +494,6 @@ static struct object_data *__do_get_device_data_always(const void* key, bool is_
 
 	struct loop_object *lo = 
 		rhashtable_lookup(&loops_ht, key, loops_ht_params);
-
-	printk("key was: %s, result is: %p\n", (char*)key, lo);
 
 	if(lo == NULL) {
 		return NULL;

@@ -109,8 +109,6 @@ static struct dentry* mkdir_may_exist(const char* relname, struct dentry* dentry
 			return NULL;
 		}
 
-		printk("found dir\n");
-
 		return existing_path.dentry;
 	}
 

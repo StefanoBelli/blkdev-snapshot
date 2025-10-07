@@ -40,7 +40,6 @@ static void cleanup_epoch_work(struct work_struct *work) {
 }
 
 static void __epoch_event_cb_count_mount(struct epoch* epoch) {
-	printk("epoch event count!\n");
 	epoch->n_currently_mounted++;
 
 	if(epoch->n_currently_mounted == 1) {
