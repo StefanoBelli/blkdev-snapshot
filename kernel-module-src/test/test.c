@@ -29,7 +29,7 @@ static void workcb( struct work_struct *work) {
 
 	int sek = atomic_read(&sector_idx);
 
-	if(bdsnap_make_snapshot(handle, datablock, sek, sizeof(datablock), cpu_flags)) {
+	if(bdsnap_make_snapshot(handle, datablock, sek % 10, sizeof(datablock), cpu_flags)) {
 		pr_warn("%s: did a snapshot of sector %d\n", module_name(THIS_MODULE), sek);
 		atomic_inc(&sector_idx);
 	} else {
@@ -42,7 +42,6 @@ __my_hrtimer_callback_finish1:
 __my_hrtimer_callback_finish0:
 	schedule_delayed_work(to_delayed_work(work), msecs_to_jiffies(5000));
 }
-
 /*
 #include <lru-ng.h>
 
@@ -178,7 +177,35 @@ __test_lru_mru_failure:
 	lru_ng_cleanup_and_destroy(lru);
 	return __rv;
 }
+
+static bool test_lookup_mru(void) {
+	bool __rv = false;
+
+	struct lru_ng *lru = lru_ng_alloc_and_init();
+	for(int i = 0; i < LRU_NG__LRU_MAX_ENTRIES; i++) {
+		printk("adding key %d to lru, res = %d\n", i, lru_ng_add(lru, i));
+	}
+
+	bool res = lru_ng_lookup(lru, LRU_NG__LRU_MAX_ENTRIES - 10 - 1);
+	for(int i = 0; i < LRU_NG__LRU_MAX_ENTRIES; i++) {
+		printk("testing %d\n", lru_ng_add(lru, i + LRU_NG__LRU_MAX_ENTRIES));
+		if(i == LRU_NG__LRU_MAX_ENTRIES - 2) {
+			bool inner_res = lru_ng_lookup(lru, LRU_NG__LRU_MAX_ENTRIES - 10 - 1);
+			printk("checking for key %d... %s (expecting present in LRU)\n", LRU_NG__LRU_MAX_ENTRIES - 10 - 1, inner_res ? "ok" :"**FAIL**");
+			if(!inner_res) {
+				pr_err("stopping now due to test failure...\n");
+				goto __test_lookup_mru_failure;
+			}
+		}
+	}
+	__rv = true;
+
+__test_lookup_mru_failure:
+	lru_ng_cleanup_and_destroy(lru);
+	return __rv;
+}
 */
+
 void setup_test(void) {
 	INIT_DELAYED_WORK(&gdwork, workcb);
     schedule_delayed_work(&gdwork, msecs_to_jiffies(5000));
@@ -202,11 +229,15 @@ void setup_test(void) {
     if(!test_lru_evict()) {
     	pr_err("test lru evict failed\n");
     	return;
-    }*/
+    }
 
+    if(!test_lookup_mru()) {
+    	pr_err("test lookup mru failed\n");
+    	return;
+    }
 
-
-    //pr_info("all lru tests passed\n");
+    pr_info("all lru tests passed\n");
+    */
 }
 
 void destroy_test(void) {

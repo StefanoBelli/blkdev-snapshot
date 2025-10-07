@@ -272,7 +272,7 @@ struct snapblock_file_hdr {
 	(_mand_hdr_name).payld_type = SNAPBLOCK_PAYLOAD_TYPE_RAW; \
 	(_mand_hdr_name).payld_off = sizeof(struct snapblock_file_hdr)
 
-static bool read_snapblock_mandatory_header(
+static inline bool read_snapblock_mandatory_header(
 		struct file *filp, 
 		struct snapblock_file_hdr *out_hdr,
 		loff_t start_hdr_off) {
@@ -515,8 +515,6 @@ static void make_snapshot(struct work_struct *work) {
 				&wargs) != 0) {
 		goto __make_snapshot_finish1;
 	}
-
-	//need to add to LRU anyway
 
 __make_snapshot_finish2:
 	lru_ng_add(*msw_args->cached_blocks, msw_args->block_nr);
