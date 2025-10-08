@@ -569,6 +569,39 @@ static bool queue_snapshot_work(
  *
  */
 
+bool bdsnap_test_device(
+		const struct block_device* bdev) {
+
+	struct mountinfo minfo;
+	from_block_device_to_mountinfo(&minfo, bdev);
+
+	rcu_read_lock();
+
+	struct object_data *data = get_device_data_always(&minfo);
+	if(data == NULL) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	bool validity = false;
+
+	unsigned long flags;
+	spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
+	
+	validity = 
+		data->e.n_currently_mounted > 0 && 
+		!data->wq_is_destroyed && 
+		!spin_is_locked(&data->wq_destroy_lock);
+
+	rcu_read_unlock();
+
+	spin_unlock_irqrestore(&data->cleanup_epoch_lock, flags);
+
+	return validity;
+}
+
+EXPORT_SYMBOL_GPL(bdsnap_test_device);
+
 void* bdsnap_search_device(
 		const struct block_device* bdev, 
 		unsigned long *saved_cpu_flags) {

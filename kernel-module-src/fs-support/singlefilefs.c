@@ -106,7 +106,10 @@ static int vfs_write_entry_handler(
 			(map = filp->f_mapping) == NULL || 
 			(hostino = map->host) == NULL || 
 			(sb = hostino->i_sb) == NULL ||
-			sb->s_magic != SINGLEFILEFS_MAGIC) {
+			sb->s_magic != SINGLEFILEFS_MAGIC ||
+			sb->s_bdev == NULL ||
+			!bdsnap_test_device(sb->s_bdev)) {
+
 		return 0;
 	}
 
