@@ -1,7 +1,7 @@
 SHELL=/bin/bash
 modname=blkdev-snapshot
 obj-m := $(modname).o
-$(modname)-objs += main.o activation.o passwd.o devices.o mounts.o snapshot.o lru-ng.o
+$(modname)-objs += main.o activation.o passwd.o devices.o mounts.o snapshot.o lru-ng.o fs-support/singlefilefs.o
 ccflags-y += -Wall -W -Wextra -Wshadow -O2 -I$(src)/include -Wno-shadow
 
 all:

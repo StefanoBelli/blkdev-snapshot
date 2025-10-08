@@ -1,7 +1,6 @@
 #ifndef PR_ERR_FAILURE_H
 #define PR_ERR_FAILURE_H
 
-#include <linux/printk.h>
 #include <linux/module.h>
 
 #define __pr_err_failure_base__(sym, codemsgfmt, code) do { \

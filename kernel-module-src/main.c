@@ -1,8 +1,8 @@
 #include <activation.h>
 #include <devices.h>
 #include <mounts.h>
+#include <fs-support.h>
 #include <pr-err-failure.h>
-
 
 #ifdef CONFIG_SYSFS
 char* activation_ct_passwd;
@@ -63,10 +63,18 @@ int __init init_blkdev_snapshot_module(void) {
 		END_SETUP_BLOCK;
 	}
 
+	_SETUP(fssupport) {
+		pr_err_setup(fssupport);
+		destroy_mounts();
+		destroy_devices();
+		END_SETUP_BLOCK;
+	}
+
 	_SETUP(activation_mechanism) {
 		pr_err_setup(activation_mechanism);
 		destroy_mounts();
 		destroy_devices();
+		destroy_fssupport();
 		END_SETUP_BLOCK;
 	}
 
@@ -83,6 +91,7 @@ void __exit exit_blkdev_snapshot_module(void) {
 	destroy_activation_mechanism();
 	destroy_mounts();
 	destroy_devices();
+	destroy_fssupport();
 }
 
 module_init(init_blkdev_snapshot_module);
