@@ -3,8 +3,7 @@
 
 #include <linux/module.h>
 
-int register_fssupport_singlefilefs(void);
-void unregister_fssupport_singlefilefs(void);
+#include <fs-support/singlefilefs.h>
 
 struct fssupport_struct {
 	const char* name;
@@ -20,12 +19,14 @@ static struct fssupport_struct supported_fs[] = {
 	}
 };
 
-static inline int setup_fssupport(void) {
+static int setup_fssupport(void) {
 	int num_supp_fs = sizeof(supported_fs) / sizeof(struct fssupport_struct);
 	for(int i = 0; i < num_supp_fs; i++) {
-		if(supported_fs[i].regi() != 0) {
-			pr_err("%s: unable to register filesystem named \"%s\"\n", 
-					module_name(THIS_MODULE), supported_fs[i].name);
+		int err = supported_fs[i].regi();
+		if(err != 0) {
+			pr_err("%s: unable to register filesystem named \"%s\" (idx = %d).\n"
+					"Its regifn failed with code: %d\n", 
+					module_name(THIS_MODULE), supported_fs[i].name, i, err);
 			for(int j = 0; j < i; j++) {
 				supported_fs[i].unregi();
 			}
@@ -37,7 +38,7 @@ static inline int setup_fssupport(void) {
 	return 0;
 }
 
-static inline void destroy_fssupport(void) {
+static void destroy_fssupport(void) {
 	int num_supp_fs = sizeof(supported_fs) / sizeof(struct fssupport_struct);
 	for(int i = 0; i < num_supp_fs; i++) {
 		supported_fs[i].unregi();

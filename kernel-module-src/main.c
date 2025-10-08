@@ -1,7 +1,7 @@
 #include <activation.h>
 #include <devices.h>
 #include <mounts.h>
-#include <fs-support.h>
+#include <fs-support/fs-support.h>
 #include <pr-err-failure.h>
 
 #ifdef CONFIG_SYSFS

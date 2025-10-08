@@ -4,14 +4,24 @@
 #include <linux/slab.h>
 #include <linux/buffer_head.h>
 #include <linux/fs.h>
+#include <linux/xxhash.h>
 
 #include <bdsnap/bdsnap.h>
+#include <fs-support/singlefilefs.h>
+
+#define SINGLEFILEFS_MAGIC 0x42424242
 
 static DEFINE_HASHTABLE(xkpblocks_ht, 18);
 static DEFINE_SPINLOCK(xkpblocks_ht_lock);
 
-struct xkpblocks_node {
+struct xkpblocks_key {
 	u64 tid;
+	u64 tstart;
+};
+
+struct xkpblocks_node {
+	struct xkpblocks_key key;
+
 	char *block;
 	u64 blocksize;
 	u64 blocknum;
@@ -19,15 +29,24 @@ struct xkpblocks_node {
 	struct hlist_node node;
 };
 
-static void remove_threadentry_now(pid_t key) {
+static __always_inline u64 keyhashit(struct xkpblocks_key *key) {
+	return xxh64(key, sizeof(struct xkpblocks_key), 0x123456789a9b9c9d);
+}
+
+static void remove_threadentry_now(pid_t tid, u64 tstart) {
+	struct xkpblocks_key key = {
+		.tid = (u64) tid,
+		.tstart = tstart
+	};
+
 	struct xkpblocks_node *cur;
 	struct hlist_node *tmp;
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
 
-	hash_for_each_possible_safe(xkpblocks_ht, cur, tmp, node, (u64) key) {
-		if(cur->tid == (u64) key) {
+	hash_for_each_possible_safe(xkpblocks_ht, cur, tmp, node, keyhashit(&key)) {
+		if(cur->key.tid == key.tid && cur->key.tstart == key.tstart) {
 			if(cur->block != NULL) {
 				kfree(cur->block);
 			}
@@ -41,15 +60,20 @@ static void remove_threadentry_now(pid_t key) {
 	spin_unlock_irqrestore(&xkpblocks_ht_lock, flags);
 }
 
-static struct xkpblocks_node* search_threadentry(pid_t key) {
+static struct xkpblocks_node* search_threadentry(pid_t tid, u64 tstart) {
+	struct xkpblocks_key key = {
+		.tid = (u64) tid,
+		.tstart = tstart
+	};
+
 	struct xkpblocks_node *found = NULL;
 	struct xkpblocks_node *cur;
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
 
-	hash_for_each_possible(xkpblocks_ht, cur, node, (u64) key) {
-		if(cur->tid == (u64) key) {
+	hash_for_each_possible(xkpblocks_ht, cur, node, keyhashit(&key)) {
+		if(cur->key.tid == key.tid && cur->key.tstart == key.tstart) {
 			found = cur;
 			break;
 		}
@@ -67,7 +91,6 @@ static struct xkpblocks_node* search_threadentry(pid_t key) {
  */
 
 #define KRP_VFS_WRITE_SYMBOL_NAME "vfs_write"
-#define SINGLEFILEFS_MAGIC 0x42424242
 
 static int vfs_write_entry_handler(
 		__always_unused struct kretprobe_instance *krp_inst, 
@@ -93,12 +116,13 @@ static int vfs_write_entry_handler(
 	}
 
 	INIT_HLIST_NODE(&node->node);
-	node->tid = task_pid_nr(current);
+	node->key.tid = task_pid_nr(current);
+	node->key.tstart = current->start_boottime;
 	node->block = NULL;
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
-	hash_add(xkpblocks_ht, &node->node, node->tid);
+	hash_add(xkpblocks_ht, &node->node, keyhashit(&node->key));
 	spin_unlock_irqrestore(&xkpblocks_ht_lock, flags);
 
 	return 0;
@@ -108,7 +132,7 @@ static int vfs_write_handler(
 		__always_unused struct kretprobe_instance *krp_inst, 
 		__always_unused struct pt_regs* regs) {
 
-	remove_threadentry_now(task_pid_nr(current));
+	remove_threadentry_now(task_pid_nr(current), current->start_boottime);
 	return 0;
 }
 
@@ -124,9 +148,10 @@ static int sb_bread_handler(
 		__always_unused struct kretprobe_instance *krp_inst, 
 		struct pt_regs* regs) {
 
-	pid_t key = task_pid_nr(current);
+	pid_t tid = task_pid_nr(current);
+	u64 tstart = current->start_boottime;
 
-	struct xkpblocks_node *threntry = search_threadentry(key);
+	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
 	if(threntry == NULL) {
 		return 0;
 	}
@@ -134,7 +159,7 @@ static int sb_bread_handler(
 	struct buffer_head *bh = (struct buffer_head*) regs_return_value(regs);
 
 	if((threntry->block = kmalloc(bh->b_size, GFP_ATOMIC)) == NULL) {
-		remove_threadentry_now(key);
+		remove_threadentry_now(tid, tstart);
 		return 0;
 	}
 
@@ -157,16 +182,17 @@ static int write_dirty_buffer_pre_handler(
 		__always_unused struct kprobe *kp, 
 		struct pt_regs *regs) {
 
-	pid_t key = task_pid_nr(current);
+	pid_t tid = task_pid_nr(current);
+	u64 tstart = current->start_boottime;
 
-	struct xkpblocks_node *threntry = search_threadentry(key);
+	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
 	if(threntry == NULL) {
 		return 0;
 	}
 
 	struct buffer_head *bh = (struct buffer_head*) regs->di;
 	if(bh->b_bdev == NULL) {
-		remove_threadentry_now(key);
+		remove_threadentry_now(tid, tstart);
 		return 0;
 	}
 
@@ -186,7 +212,7 @@ static int write_dirty_buffer_pre_handler(
 
 	rcu_read_unlock();
 
-	remove_threadentry_now(key);
+	remove_threadentry_now(tid, tstart);
 	return 0;
 }
 
@@ -254,9 +280,6 @@ static size_t num_kps_to_register =
  * register/unregister fs-specific support
  *
  */
-
-int register_fssupport_singlefilefs(void);
-void unregister_fssupport_singlefilefs(void);
 
 int register_fssupport_singlefilefs(void) {
 	int krp_res = register_kretprobes(krps_to_register, num_krps_to_register);
