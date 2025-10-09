@@ -57,15 +57,15 @@ int __init init_blkdev_snapshot_module(void) {
 		END_SETUP_BLOCK;
 	}
 
-	_SETUP(mounts) {
-		pr_err_setup(epoch_mgmt);
+	_SETUP(fssupport) {
+		pr_err_setup(fssupport);
 		destroy_devices();
 		END_SETUP_BLOCK;
 	}
 
-	_SETUP(fssupport) {
-		pr_err_setup(fssupport);
-		destroy_mounts();
+	_SETUP(mounts) {
+		pr_err_setup(epoch_mgmt);
+		destroy_fssupport();
 		destroy_devices();
 		END_SETUP_BLOCK;
 	}
@@ -73,8 +73,8 @@ int __init init_blkdev_snapshot_module(void) {
 	_SETUP(activation_mechanism) {
 		pr_err_setup(activation_mechanism);
 		destroy_mounts();
-		destroy_devices();
 		destroy_fssupport();
+		destroy_devices();
 		END_SETUP_BLOCK;
 	}
 
@@ -90,8 +90,8 @@ int __init init_blkdev_snapshot_module(void) {
 void __exit exit_blkdev_snapshot_module(void) {
 	destroy_activation_mechanism();
 	destroy_mounts();
-	destroy_devices();
 	destroy_fssupport();
+	destroy_devices();
 }
 
 module_init(init_blkdev_snapshot_module);

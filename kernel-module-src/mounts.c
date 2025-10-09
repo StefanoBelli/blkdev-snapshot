@@ -301,7 +301,7 @@ static struct kretprobe *krps_to_register[] = {
 	&krp_umount
 };
 
-static size_t num_krps_to_register = 
+static const size_t num_krps_to_register = 
 	sizeof(krps_to_register) / sizeof(struct kretprobe*);
 
 int setup_mounts(void) {

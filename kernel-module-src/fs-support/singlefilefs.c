@@ -8,6 +8,7 @@
 
 #include <bdsnap/bdsnap.h>
 #include <fs-support/singlefilefs.h>
+#include <pr-err-failure.h>
 
 #define SINGLEFILEFS_MAGIC 0x42424242
 
@@ -19,6 +20,12 @@ struct xkpblocks_key {
 	u64 tstart;
 };
 
+#define DEFINE_XKPBLOCKS_KEY(_name, _tid, _tstart) \
+	struct xkpblocks_key _name = { \
+		.tid = ((u64) _tid), \
+		.tstart = (_tstart) \
+	}
+
 struct xkpblocks_node {
 	struct xkpblocks_key key;
 
@@ -27,17 +34,25 @@ struct xkpblocks_node {
 	u64 blocknum;
 
 	struct hlist_node node;
+	struct rcu_head rcu;
 };
 
 static __always_inline u64 keyhashit(struct xkpblocks_key *key) {
 	return xxh64(key, sizeof(struct xkpblocks_key), 0x123456789a9b9c9d);
 }
 
+static void xkpblocks_rcu_free_fn(struct rcu_head *rcu) {
+	struct xkpblocks_node *n = container_of(rcu, struct xkpblocks_node, rcu);
+	
+	if(n->block != NULL) {
+		kfree(n->block);
+	}
+
+	kfree(n);
+}
+
 static void remove_threadentry_now(pid_t tid, u64 tstart) {
-	struct xkpblocks_key key = {
-		.tid = (u64) tid,
-		.tstart = tstart
-	};
+	DEFINE_XKPBLOCKS_KEY(key, tid, tstart);
 
 	struct xkpblocks_node *cur;
 	struct hlist_node *tmp;
@@ -47,12 +62,8 @@ static void remove_threadentry_now(pid_t tid, u64 tstart) {
 
 	hash_for_each_possible_safe(xkpblocks_ht, cur, tmp, node, keyhashit(&key)) {
 		if(cur->key.tid == key.tid && cur->key.tstart == key.tstart) {
-			if(cur->block != NULL) {
-				kfree(cur->block);
-			}
-
-			hash_del(&cur->node);
-			kfree(cur);
+			hash_del_rcu(&cur->node);
+			call_rcu(&cur->rcu, xkpblocks_rcu_free_fn);
 			break;
 		}
 	}
@@ -61,27 +72,98 @@ static void remove_threadentry_now(pid_t tid, u64 tstart) {
 }
 
 static struct xkpblocks_node* search_threadentry(pid_t tid, u64 tstart) {
-	struct xkpblocks_key key = {
-		.tid = (u64) tid,
-		.tstart = tstart
-	};
+	DEFINE_XKPBLOCKS_KEY(key, tid, tstart);
 
 	struct xkpblocks_node *found = NULL;
 	struct xkpblocks_node *cur;
 
-	unsigned long flags;
-	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
-
-	hash_for_each_possible(xkpblocks_ht, cur, node, keyhashit(&key)) {
+	hash_for_each_possible_rcu(xkpblocks_ht, cur, node, keyhashit(&key)) {
 		if(cur->key.tid == key.tid && cur->key.tstart == key.tstart) {
 			found = cur;
 			break;
 		}
 	}
 
-	spin_unlock_irqrestore(&xkpblocks_ht_lock, flags);
-
 	return found;
+}
+
+static void cleanup_xkpblocks_ht(void) {
+	size_t bktnr;
+	struct xkpblocks_node *cur;
+	struct hlist_node *tmp;
+
+	spin_lock(&xkpblocks_ht_lock);
+
+	hash_for_each_safe(xkpblocks_ht, bktnr, tmp, cur, node) {
+		hash_del_rcu(&cur->node);
+		call_rcu(&cur->rcu, xkpblocks_rcu_free_fn);
+	}
+
+	spin_unlock(&xkpblocks_ht_lock);
+}
+
+static bool __do_taskcheck_on(u64 key_tid, u64 key_tstart) {
+	bool res = false;
+
+	struct task_struct *p;
+
+	rcu_read_lock();
+
+	struct pid *pid = find_pid_ns(key_tid, &init_pid_ns);
+	p = pid_task(pid, PIDTYPE_PID);
+
+	if(p == NULL) {
+		goto ____do_taskcheck_on_finish0;
+	}
+
+	get_task_struct(p);
+	u64 tstart = p->start_boottime;
+	int texited = p->exit_state;
+	
+	if(tstart != key_tstart || texited) {
+		goto ____do_taskcheck_on_finish1;
+	}
+
+	res = true;
+
+____do_taskcheck_on_finish1:
+	put_task_struct(p);
+
+____do_taskcheck_on_finish0:
+	rcu_read_unlock();
+
+	return res;
+}
+
+static struct delayed_work gdwork_taskcheck;
+
+#define schedule_taskcheck_work(_dwork) \
+	do { \
+		if(!schedule_delayed_work((_dwork), msecs_to_jiffies(3600000))) { \
+			pr_err_failure("schedule_delayed_work"); \
+		} \
+	} while(0)
+
+static void periodic_taskcheck_xkpblocks_ht(struct work_struct *work) {
+	static u32 next_bktnr = 0;
+	u32 end = min(next_bktnr + 50, HASH_SIZE(xkpblocks_ht));
+
+	spin_lock(&xkpblocks_ht_lock);
+
+    for (u32 bktnr = next_bktnr; bktnr < end; bktnr++) {
+        struct xkpblocks_node *cur;
+        struct hlist_node *tmp;
+
+        hlist_for_each_entry_safe(cur, tmp, &xkpblocks_ht[bktnr], node) {
+            if (!__do_taskcheck_on(cur->key.tid, cur->key.tstart)) {
+            	hash_del_rcu(&cur->node);
+            	call_rcu(&cur->rcu, xkpblocks_rcu_free_fn);
+            }
+        }
+    }
+
+    spin_unlock(&xkpblocks_ht_lock);
+    schedule_taskcheck_work(to_delayed_work(work));
 }
 
 /**
@@ -125,7 +207,7 @@ static int vfs_write_entry_handler(
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
-	hash_add(xkpblocks_ht, &node->node, keyhashit(&node->key));
+	hash_add_rcu(xkpblocks_ht, &node->node, keyhashit(&node->key));
 	spin_unlock_irqrestore(&xkpblocks_ht_lock, flags);
 
 	return 0;
@@ -135,7 +217,20 @@ static int vfs_write_handler(
 		__always_unused struct kretprobe_instance *krp_inst, 
 		__always_unused struct pt_regs* regs) {
 
-	remove_threadentry_now(task_pid_nr(current), current->start_boottime);
+	pid_t tid = task_pid_nr(current);
+	u64 tstart = current->start_boottime;
+
+	rcu_read_lock();
+
+	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
+	if(threntry == NULL) {
+		rcu_read_unlock();
+		return 0;
+	}
+
+	rcu_read_unlock();
+	remove_threadentry_now(tid, tstart);
+
 	return 0;
 }
 
@@ -154,14 +249,18 @@ static int sb_bread_handler(
 	pid_t tid = task_pid_nr(current);
 	u64 tstart = current->start_boottime;
 
+	rcu_read_lock();
+
 	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
 	if(threntry == NULL) {
+		rcu_read_unlock();
 		return 0;
 	}
 
 	struct buffer_head *bh = (struct buffer_head*) regs_return_value(regs);
 
 	if((threntry->block = kmalloc(bh->b_size, GFP_ATOMIC)) == NULL) {
+		rcu_read_unlock();
 		remove_threadentry_now(tid, tstart);
 		return 0;
 	}
@@ -169,6 +268,8 @@ static int sb_bread_handler(
 	memcpy(threntry->block, bh->b_data, bh->b_size);
 	threntry->blocksize = bh->b_size;
 	threntry->blocknum = bh->b_blocknr;
+
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -188,20 +289,22 @@ static int write_dirty_buffer_pre_handler(
 	pid_t tid = task_pid_nr(current);
 	u64 tstart = current->start_boottime;
 
+	rcu_read_lock();
+
 	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
 	if(threntry == NULL) {
+		rcu_read_unlock();
 		return 0;
 	}
 
 	struct buffer_head *bh = (struct buffer_head*) regs->di;
 	if(bh->b_bdev == NULL) {
+		rcu_read_unlock();
 		remove_threadentry_now(tid, tstart);
 		return 0;
 	}
 
 	unsigned long saved_cpu_flags;
-
-	rcu_read_lock();
 
 	void* handle = bdsnap_search_device(
 			bh->b_bdev, &saved_cpu_flags);
@@ -214,8 +317,8 @@ static int write_dirty_buffer_pre_handler(
 			saved_cpu_flags);
 
 	rcu_read_unlock();
-
 	remove_threadentry_now(tid, tstart);
+
 	return 0;
 }
 
@@ -261,7 +364,7 @@ static struct kretprobe *krps_to_register[] = {
 	&krp_sb_bread
 };
 
-static size_t num_krps_to_register = 
+static const size_t num_krps_to_register = 
 	sizeof(krps_to_register) / sizeof(struct kretprobe*);
 
 
@@ -275,7 +378,7 @@ static struct kprobe *kps_to_register[] = {
 	&kp_write_dirty_buffer
 };
 
-static size_t num_kps_to_register = 
+static const size_t num_kps_to_register = 
 	sizeof(kps_to_register) / sizeof(struct kprobe*);
 
 /**
@@ -287,14 +390,19 @@ static size_t num_kps_to_register =
 int register_fssupport_singlefilefs(void) {
 	int krp_res = register_kretprobes(krps_to_register, num_krps_to_register);
 	if(krp_res != 0) {
+		pr_err_failure_with_code("register_kretprobes", krp_res);
 		return krp_res;
 	}
 
 	int kp_res = register_kprobes(kps_to_register, num_kps_to_register);
 	if(kp_res != 0) {
+		pr_err_failure_with_code("register_kprobes", kp_res);
 		unregister_kretprobes(krps_to_register, num_krps_to_register);
 		return kp_res;
 	}
+
+	INIT_DELAYED_WORK(&gdwork_taskcheck, periodic_taskcheck_xkpblocks_ht);
+	schedule_taskcheck_work(&gdwork_taskcheck);
 
 	return 0;
 }
@@ -302,4 +410,10 @@ int register_fssupport_singlefilefs(void) {
 void unregister_fssupport_singlefilefs(void) {
 	unregister_kretprobes(krps_to_register, num_krps_to_register);
 	unregister_kprobes(kps_to_register, num_kps_to_register);
+
+	if(!cancel_delayed_work_sync(&gdwork_taskcheck)) {
+		pr_err_failure("cancel_delayed_work_sync");
+	}
+
+	cleanup_xkpblocks_ht();
 }
