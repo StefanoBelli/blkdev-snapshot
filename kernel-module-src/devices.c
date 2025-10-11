@@ -23,11 +23,7 @@ static void __init_object_data(
 	spin_lock_init(&data->wq_destroy_lock);
 	spin_lock_init(&data->cleanup_epoch_lock);
 
-	//ensuring fields inited to 0 (independent of allocation way)
-	data->e.n_currently_mounted = 0;
-	data->e.cached_blocks = NULL;
-	data->e.path_snapdir = NULL;
-	data->e.first_mount_date[MNT_FMT_DATE_LEN] = 0;
+	data->e = NULL;
 
 	strscpy(data->original_dev_name, original_dev_name, PATH_MAX);
 
@@ -60,45 +56,123 @@ static void init_object_data_loop(
 // - when user deactivates snapshot for a device
 // - when we're unable to "insert device" and we need to cleanup (no locking as
 //	 in this case, object_data is not visible in any way to other thrs)
-static void __cleanup_object_data(struct object_data* data, bool locking) {
-	printk("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK\n");
+//
+// defer work: lie about wq destruction and epoch cleaning - it will be done later on
+//an umount event won't be able to queue_work for epoch cleanup
+//data->e will eventually be set to NULL and we got the general_lock
+//on the contrary, if the umount event count gets the general_lock prior
+//we just wait for all the wqs to finish and nothing more is done 
+//since it already queued the last work that will cleanup the epoch 
+//and they set data->e to NULL (see workfn)
 
-	unsigned long flags;
-	if(locking) {
-		spin_lock(&data->general_lock);
-		spin_lock_irqsave(&data->wq_destroy_lock, flags);
+struct waddw_args  {
+	struct workqueue_struct *device_wq;
+	struct epoch *last_epoch;
+};
+
+#define SET_WADDW_ARGS(_name, _wq, _epoch) \
+	(_name).device_wq = (_wq); \
+	(_name).last_epoch = (_epoch)
+
+#define DEFINE_WADDW_ARGS(_name, _wq, _epoch) \
+	struct waddw_args _name = { \
+		.device_wq = (_wq), \
+		.last_epoch = (_epoch) \
 	}
 
-	flush_workqueue(data->wq);
-	destroy_workqueue(data->wq);
+static void __do_waddw(const struct waddw_args *wargs) {
+	flush_workqueue(wargs->device_wq);
+	destroy_workqueue(wargs->device_wq);
+
+	if(wargs->last_epoch != NULL) {
+		if(wargs->last_epoch->path_snapdir != NULL) {
+			path_put(wargs->last_epoch->path_snapdir);
+		}
+
+		if(wargs->last_epoch->cached_blocks != NULL) {
+			lru_ng_cleanup_and_destroy(wargs->last_epoch->cached_blocks);
+		}
+
+		kfree(wargs->last_epoch);
+	}
+}
+
+struct waddw_work {
+	struct waddw_args waddw_args;
+	struct work_struct work;
+};
+
+static void wait_and_destroy_device_workqueue(struct work_struct *work) {
+	struct waddw_work *args = container_of(work, struct waddw_work, work);
+	__do_waddw(&args->waddw_args);
+}
+
+struct waddw_worklist_node {
+	struct list_head node;
+	struct waddw_work *wargs;
+};
+
+static LIST_HEAD(waddw_worklist);
+static DEFINE_SPINLOCK(waddw_worklist_glock);
+
+//atomic context allowed
+static void cleanup_object_data(struct object_data* data) {
+	unsigned long cpu_flags_0;
+	spin_lock_irqsave(&data->general_lock, cpu_flags_0);
+
+	unsigned long cpu_flags_1;
+	spin_lock_irqsave(&data->wq_destroy_lock, cpu_flags_1);
 
 	data->wq_is_destroyed = true;
 
-	if(locking) {
-		spin_unlock_irqrestore(&data->wq_destroy_lock, flags);
+	spin_unlock_irqrestore(&data->wq_destroy_lock, cpu_flags_1);
+
+	struct epoch *saved_last_epoch = data->e;
+	if(data->e != NULL) {
+		data->e = NULL;
 	}
 
-	if(data->e.path_snapdir != NULL) {
-		path_put(data->e.path_snapdir);
-		data->e.path_snapdir = NULL;
+	spin_unlock_irqrestore(&data->general_lock, cpu_flags_0);
+
+	struct waddw_worklist_node *wlistnode = kmalloc(sizeof(struct waddw_worklist_node), GFP_ATOMIC);
+	if(wlistnode == NULL) {
+		return;
 	}
 
-	if(data->e.cached_blocks != NULL) {
-		lru_ng_cleanup_and_destroy(data->e.cached_blocks);
-		data->e.cached_blocks = NULL;
+	INIT_LIST_HEAD(&wlistnode->node);
+	wlistnode->wargs = kmalloc(sizeof(struct waddw_work), GFP_ATOMIC);
+
+	if(wlistnode->wargs == NULL) {
+		return;
 	}
 
-	if(locking) {
-		spin_unlock(&data->general_lock);
+	SET_WADDW_ARGS(wlistnode->wargs->waddw_args, data->wq, saved_last_epoch);
+	INIT_WORK(&wlistnode->wargs->work, wait_and_destroy_device_workqueue);
+	schedule_work(&wlistnode->wargs->work);
+
+	spin_lock_irqsave(&waddw_worklist_glock, cpu_flags_0);
+
+	list_add_tail(&wlistnode->node, &waddw_worklist);
+
+	struct waddw_worklist_node *cur;
+	struct waddw_worklist_node *tmp;
+
+	list_for_each_entry_safe(cur, tmp, &waddw_worklist, node) {
+		if(!work_busy(&cur->wargs->work)) {
+			list_del(&cur->node);
+			kfree(cur->wargs);
+			kfree(cur);
+		}
 	}
+
+	spin_unlock_irqrestore(&waddw_worklist_glock, cpu_flags_0);
 }
 
-static void cleanup_object_data(struct object_data* data) {
-	__cleanup_object_data(data, true);
-}
-
-static void cleanup_object_data_nolocking(struct object_data* data) {
-	__cleanup_object_data(data, false);
+//in process context only
+static void cleanup_object_data_notvisible(struct object_data* data) {
+	DEFINE_WADDW_ARGS(args, data->wq, data->e);
+	__do_waddw(&args);
+	data->wq_is_destroyed = true;
 }
 
 /**
@@ -282,19 +356,30 @@ static int get_loop_device_backing_file(dev_t bddevt, char* out_lofname) {
  *
  */
 
+static bool allow_reging_operation = false;
+static DECLARE_RWSEM(allow_reging_operation_sem);
+
 static int __do_device_reging_operation(
 		const char* path, 
 		int (*op_on_loopdev)(const char*, const char*), 
 		int (*op_on_blkdev)(dev_t, const char*)) {
 
+	down_read(&allow_reging_operation_sem);
+	if(!allow_reging_operation) {
+		up_read(&allow_reging_operation_sem);
+		return -EBUSY;
+	}
+
 	struct inode *ino;
 	int err = get_inode_from_cstr_path(path, &ino);
 
 	if(err != 0) {
+		up_read(&allow_reging_operation_sem);
 		return err;
 	}
 
 	if(ino == NULL) {
+		up_read(&allow_reging_operation_sem);
 		return -ENFILE;
 	}
 
@@ -316,6 +401,7 @@ static int __do_device_reging_operation(
 	}
 
 	iput(ino);
+	up_read(&allow_reging_operation_sem);
 	return err;
 }
 
@@ -351,11 +437,11 @@ static int try_to_insert_loop_device(const char* path, const char* original_dev_
 	
 	if(IS_ERR(old_obj)) {
 		pr_err_failure_with_code("rhashtable_lookup_get_insert_key", PTR_ERR(old_obj));
-		cleanup_object_data_nolocking(&new_obj->value);
+		cleanup_object_data_notvisible(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
-		cleanup_object_data_nolocking(&new_obj->value);
+		cleanup_object_data_notvisible(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
 	}
@@ -379,11 +465,11 @@ static int try_to_insert_block_device(dev_t bddevt, const char* original_dev_nam
 		
 	if(IS_ERR(old_obj)) {
 		pr_err_failure_with_code("rhashtable_lookup_get_insert_key", PTR_ERR(old_obj));
-		cleanup_object_data_nolocking(&new_obj->value);
+		cleanup_object_data_notvisible(&new_obj->value);
 		kfree(new_obj);
 		return -EFAULT;
 	} else if(old_obj != NULL) {
-		cleanup_object_data_nolocking(&new_obj->value);
+		cleanup_object_data_notvisible(&new_obj->value);
 		kfree(new_obj);
 		return -EEXIST;
 	}
@@ -518,89 +604,51 @@ struct object_data *get_device_data_always(const struct mountinfo *minfo) {
  */
 
 int setup_devices(void) {
+	down_write(&allow_reging_operation_sem);
+
 	if(rhashtable_init(&blkdevs_ht, &blkdevs_ht_params) != 0) {
+		up_write(&allow_reging_operation_sem);
 		return -EINVAL;
 	}
 
 	if(rhashtable_init(&loops_ht, &loops_ht_params) != 0) {
 		rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
+		up_write(&allow_reging_operation_sem);
 		return -EINVAL;
 	}
+
+	allow_reging_operation = true;
+	up_write(&allow_reging_operation_sem);
 
 	return 0;
 }
 
-static void teardown_blkdev_entries(struct rhashtable *ht, const struct rhashtable_params *p) {
-    struct blkdev_object *o;
-    struct rhashtable_iter iter;
-
-    while(1) {
-    	rhashtable_walk_enter(ht, &iter);
-    	rhashtable_walk_start(&iter);
-
-    	for (;;) {
-        	o = rhashtable_walk_next(&iter);
-        	if(o == NULL) {
-        		break;
-        	}
-
-        	if (IS_ERR(o)) {
-        		pr_err("%s: error while walking rhashtable for cleanup\n", module_name(THIS_MODULE));
-            	break;
-        	}
-
-        	rhashtable_remove_fast(ht, &o->linkage, *p);
-    	}
-
-    	rhashtable_walk_stop(&iter);
-    	rhashtable_walk_exit(&iter);
-
-    	if(o != NULL) {
-    		cleanup_object_data(&o->value);
-    		kfree_rcu(o, rcu);
-    	} else {
-    		return;
-    	}
-    }
-}
-
-static void teardown_loop_entries(struct rhashtable *ht, const struct rhashtable_params *p) {
-    struct loop_object *o;
-    struct rhashtable_iter iter;
-
-    while(1) {
-    	rhashtable_walk_enter(ht, &iter);
-    	rhashtable_walk_start(&iter);
-
-    	for (;;) {
-        	o = rhashtable_walk_next(&iter);
-        	if(o == NULL) {
-        		break;
-        	}
-
-        	if (IS_ERR(o)) {
-        		pr_err("%s: error while walking rhashtable for cleanup\n", module_name(THIS_MODULE));
-            	break;
-        	}
-
-        	rhashtable_remove_fast(ht, &o->linkage, *p);
-    	}
-
-    	rhashtable_walk_stop(&iter);
-    	rhashtable_walk_exit(&iter);
-
-    	if(o != NULL) {
-    		cleanup_object_data(&o->value);
-    		kfree_rcu(o, rcu);
-    	} else {
-    		return;
-    	}
-    }
-}
-
 void destroy_devices(void) {
-	teardown_blkdev_entries(&blkdevs_ht, &blkdevs_ht_params);
-	teardown_loop_entries(&loops_ht, &loops_ht_params);
-	rhashtable_destroy(&blkdevs_ht);
-	rhashtable_destroy(&loops_ht);
+	down_write(&allow_reging_operation_sem);
+	allow_reging_operation = false;
+
+	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
+	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
+
+	// must do blocking flush_work on cleanup_object_data's generated work
+	// no other way. Otherwise module code execution attempt will result 
+	// in kernel oops (accompanied with a smiling page fault)
+	
+	//unsigned long cpu_flags;
+	//spin_lock_irqsave(&waddw_worklist_glock, cpu_flags);
+
+	struct waddw_worklist_node *cur;
+	struct waddw_worklist_node *tmp;
+
+	list_for_each_entry_safe(cur, tmp, &waddw_worklist, node) {
+		flush_work(&cur->wargs->work);
+
+		list_del(&cur->node);
+		kfree(cur->wargs);
+		kfree(cur);
+	}
+
+	//spin_unlock_irqrestore(&waddw_worklist_glock, cpu_flags);
+
+	up_write(&allow_reging_operation_sem);
 }

@@ -548,9 +548,9 @@ static bool queue_snapshot_work(
 	INIT_WORK(&msw->work, make_snapshot);
 	msw->block_nr = blknr;
 	msw->blocksize = blksize;
-	msw->path_snapdir = &obj->e.path_snapdir;
-	msw->cached_blocks = &obj->e.cached_blocks;
-	memcpy(msw->first_mount_date, obj->e.first_mount_date, MNT_FMT_DATE_LEN + 1);
+	msw->path_snapdir = &obj->e->path_snapdir;
+	msw->cached_blocks = &obj->e->cached_blocks;
+	memcpy(msw->first_mount_date, obj->e->first_mount_date, MNT_FMT_DATE_LEN + 1);
 	strscpy(msw->original_dev_name, obj->original_dev_name, PATH_MAX);
 	memcpy(msw->block, blk, sizeof(char) * blksize);
 
@@ -589,7 +589,7 @@ bool bdsnap_test_device(
 	spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
 	
 	validity = 
-		data->e.n_currently_mounted > 0 && 
+		data->e->n_currently_mounted > 0 && 
 		!data->wq_is_destroyed && 
 		!spin_is_locked(&data->wq_destroy_lock);
 
@@ -617,7 +617,7 @@ void* bdsnap_search_device(
 	spin_lock_irqsave(&data->cleanup_epoch_lock, *saved_cpu_flags);
 
 	// umount with MNT_DETACH may lose data
-	if(unlikely(data->e.n_currently_mounted == 0)) {
+	if(unlikely(data->e->n_currently_mounted == 0)) {
 		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
 		return NULL;
 	}

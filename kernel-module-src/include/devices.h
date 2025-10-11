@@ -30,7 +30,7 @@ struct object_data {
 	spinlock_t wq_destroy_lock;
 	spinlock_t cleanup_epoch_lock;
 	struct workqueue_struct *wq;
-	struct epoch e;
+	struct epoch *e;
 	char original_dev_name[PATH_MAX];
 };
 

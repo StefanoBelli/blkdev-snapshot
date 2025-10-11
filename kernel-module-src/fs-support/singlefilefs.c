@@ -305,13 +305,15 @@ static int write_dirty_buffer_pre_handler(
 
 	unsigned long saved_cpu_flags;
 
+	static int i = 0;
+
 	void* handle = bdsnap_search_device(
 			bh->b_bdev, &saved_cpu_flags);
 
 	bdsnap_make_snapshot(
 			handle, 
 			threntry->block, 
-			0, 
+			i++, 
 			SINGLEFILEFS_BLOCK_SIZE, 
 			saved_cpu_flags);
 

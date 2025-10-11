@@ -20,29 +20,40 @@
 
 struct finish_epoch_work {
 	struct work_struct work;
-	struct path *path;
-	struct lru_ng *lru;
+	struct epoch *ended_epoch;
 };
 
 static void cleanup_epoch_work(struct work_struct *work) {
 	struct finish_epoch_work *few = 
 		container_of(work, struct finish_epoch_work, work);
 
-	if(few->path != NULL) {
-		path_put(few->path);
+	if(few->ended_epoch->path_snapdir != NULL) {
+		path_put(few->ended_epoch->path_snapdir);
 	}
 
-	if(few->lru != NULL) {
-		lru_ng_cleanup_and_destroy(few->lru);
+	if(few->ended_epoch->cached_blocks != NULL) {
+		lru_ng_cleanup_and_destroy(few->ended_epoch->cached_blocks);
 	}
 
+	kfree(few->ended_epoch);
 	kfree(few);
 }
 
-static void __epoch_event_cb_count_mount(struct epoch* epoch) {
-	epoch->n_currently_mounted++;
+//remember: general_lock is taken
+static void __epoch_event_cb_count_mount(
+		struct epoch** epoch, 
+		bool __always_unused wq_is_destroyed) {
 
-	if(epoch->n_currently_mounted == 1) {
+	if(
+			*epoch == NULL && 
+			(*epoch = kzalloc(sizeof(struct epoch), GFP_ATOMIC)) == NULL) {
+
+		return;
+	}
+
+	(*epoch)->n_currently_mounted++;
+
+	if((*epoch)->n_currently_mounted == 1) {
 		struct timespec64 ts;
 		struct tm tm;
 
@@ -50,7 +61,7 @@ static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 		time64_to_tm(ts.tv_sec, 0, &tm);
 
 		snprintf(
-				epoch->first_mount_date, 
+				(*epoch)->first_mount_date, 
 				MNT_FMT_DATE_LEN, 
 				"-%04ld-%02d-%02d_%02d:%02d:%02d", 
 
@@ -64,33 +75,35 @@ static void __epoch_event_cb_count_mount(struct epoch* epoch) {
 	}
 }
 
-static void __epoch_event_cb_count_umount(struct epoch* epoch) {
-	epoch->n_currently_mounted--;
+//remember: general_lock is taken
+static void __epoch_event_cb_count_umount(
+		struct epoch** epoch, 
+		bool wq_is_destroyed) {
 
-	if(epoch->n_currently_mounted < 0) {
+	if(*epoch == NULL) {
+		return;
+	}
+
+	(*epoch)->n_currently_mounted--;
+
+	if((*epoch)->n_currently_mounted < 0) {
 		//this is a bug (?)
-		//OR, this can happen if when activate_snapshot 
-		//the device is already mounted somewhere
-		epoch->n_currently_mounted = 0;
-	} else if(epoch->n_currently_mounted == 0) {
+		(*epoch)->n_currently_mounted = 0;
+	} else if((*epoch)->n_currently_mounted == 0) {
 		struct object_data *data = 
 			container_of(epoch, struct object_data, e);
 
-		struct path *saved_path = data->e.path_snapdir;
-		struct lru_ng *saved_lru = data->e.cached_blocks;
-
-		data->e.path_snapdir = NULL;
-		data->e.cached_blocks = NULL;
-
 		//we hold the general lock, at this time the wq is destroyed or not
 		//but nothing can happen while we have the lock
-		if(!data->wq_is_destroyed) {
+		if(!wq_is_destroyed) {
+			struct epoch* saved_epoch = *epoch;
+			*epoch = NULL;
+
 			struct finish_epoch_work *few = (struct finish_epoch_work*) 
 				kmalloc(sizeof(struct finish_epoch_work), GFP_ATOMIC);
 
 			if(few != NULL) {
-				few->path = saved_path;
-				few->lru = saved_lru;
+				few->ended_epoch = saved_epoch;
 
 				INIT_WORK(&few->work, cleanup_epoch_work);
 				
@@ -103,7 +116,7 @@ static void __epoch_event_cb_count_umount(struct epoch* epoch) {
 	}
 }
 
-static void __do_epoch_event_count(const struct mountinfo* minfo, void (*cb)(struct epoch*)) {
+static void __do_epoch_event_count(const struct mountinfo* minfo, void (*cb)(struct epoch**, bool)) {
 	rcu_read_lock();
 
 	struct object_data *data = get_device_data_always(minfo);
@@ -114,7 +127,7 @@ static void __do_epoch_event_count(const struct mountinfo* minfo, void (*cb)(str
 
 	unsigned long flags; //cpu-saved flags
 	spin_lock_irqsave(&data->general_lock, flags);
-	cb(&data->e);
+	cb(&data->e, data->wq_is_destroyed);
 	spin_unlock_irqrestore(&data->general_lock, flags);
 
 	rcu_read_unlock();
