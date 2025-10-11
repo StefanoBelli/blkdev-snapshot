@@ -11,6 +11,7 @@
 #include <pr-err-failure.h>
 
 #define SINGLEFILEFS_MAGIC 0x42424242
+#define SINGLEFILEFS_BLOCK_SIZE 4096
 
 static DEFINE_HASHTABLE(xkpblocks_ht, 18);
 static DEFINE_SPINLOCK(xkpblocks_ht_lock);
@@ -29,8 +30,7 @@ struct xkpblocks_key {
 struct xkpblocks_node {
 	struct xkpblocks_key key;
 
-	char *block;
-	u64 blocksize;
+	char block[SINGLEFILEFS_BLOCK_SIZE];
 	u64 blocknum;
 
 	struct hlist_node node;
@@ -42,13 +42,9 @@ static __always_inline u64 keyhashit(struct xkpblocks_key *key) {
 }
 
 static void xkpblocks_rcu_free_fn(struct rcu_head *rcu) {
+	printk("freefn called NEWER VERSION :P *******************************************************************************************************************************\n");
 	struct xkpblocks_node *n = container_of(rcu, struct xkpblocks_node, rcu);
-	
-	if(n->block != NULL) {
-		kfree(n->block);
-	}
-
-	kfree(n);
+	free_pages_exact(n, sizeof(struct xkpblocks_node));
 }
 
 static void remove_threadentry_now(pid_t tid, u64 tstart) {
@@ -163,6 +159,13 @@ static void periodic_taskcheck_xkpblocks_ht(struct work_struct *work) {
     }
 
     spin_unlock(&xkpblocks_ht_lock);
+
+    if(end < HASH_SIZE(xkpblocks_ht)) {
+    	next_bktnr += end;
+    } else {
+    	next_bktnr = 0;
+    }
+
     schedule_taskcheck_work(to_delayed_work(work));
 }
 
@@ -192,18 +195,18 @@ static int vfs_write_entry_handler(
 			sb->s_bdev == NULL ||
 			!bdsnap_test_device(sb->s_bdev)) {
 
-		return 0;
+		return 1;
 	}
 
-	struct xkpblocks_node *node = kmalloc(sizeof(struct xkpblocks_node), GFP_ATOMIC);
+	struct xkpblocks_node *node = alloc_pages_exact(sizeof(struct xkpblocks_node), GFP_ATOMIC);
 	if(node == NULL) {
+		printk("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
 		return 1;
 	}
 
 	INIT_HLIST_NODE(&node->node);
 	node->key.tid = task_pid_nr(current);
 	node->key.tstart = current->start_boottime;
-	node->block = NULL;
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
@@ -222,15 +225,16 @@ static int vfs_write_handler(
 
 	rcu_read_lock();
 
-	struct xkpblocks_node *threntry = search_threadentry(tid, tstart);
-	if(threntry == NULL) {
+	struct xkpblocks_node *cur = search_threadentry(tid, tstart);
+	if(cur == NULL) {
 		rcu_read_unlock();
 		return 0;
 	}
 
 	rcu_read_unlock();
-	remove_threadentry_now(tid, tstart);
 
+	//fix here
+	remove_threadentry_now(tid, tstart);
 	return 0;
 }
 
@@ -259,14 +263,7 @@ static int sb_bread_handler(
 
 	struct buffer_head *bh = (struct buffer_head*) regs_return_value(regs);
 
-	if((threntry->block = kmalloc(bh->b_size, GFP_ATOMIC)) == NULL) {
-		rcu_read_unlock();
-		remove_threadentry_now(tid, tstart);
-		return 0;
-	}
-
 	memcpy(threntry->block, bh->b_data, bh->b_size);
-	threntry->blocksize = bh->b_size;
 	threntry->blocknum = bh->b_blocknr;
 
 	rcu_read_unlock();
@@ -281,6 +278,8 @@ static int sb_bread_handler(
  */
 
 #define KP_WRITE_DIRTY_BUFFER_SYMBOL_NAME "write_dirty_buffer"
+
+int i = 0;
 
 static int write_dirty_buffer_pre_handler(
 		__always_unused struct kprobe *kp, 
@@ -312,13 +311,12 @@ static int write_dirty_buffer_pre_handler(
 	bdsnap_make_snapshot(
 			handle, 
 			threntry->block, 
-			threntry->blocknum, 
-			threntry->blocksize, 
+			0, 
+			SINGLEFILEFS_BLOCK_SIZE, 
 			saved_cpu_flags);
 
 	rcu_read_unlock();
 	remove_threadentry_now(tid, tstart);
-
 	return 0;
 }
 

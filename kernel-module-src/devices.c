@@ -61,9 +61,12 @@ static void init_object_data_loop(
 // - when we're unable to "insert device" and we need to cleanup (no locking as
 //	 in this case, object_data is not visible in any way to other thrs)
 static void __cleanup_object_data(struct object_data* data, bool locking) {
+	printk("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK\n");
+
+	unsigned long flags;
 	if(locking) {
 		spin_lock(&data->general_lock);
-		spin_lock(&data->wq_destroy_lock);
+		spin_lock_irqsave(&data->wq_destroy_lock, flags);
 	}
 
 	flush_workqueue(data->wq);
@@ -72,12 +75,9 @@ static void __cleanup_object_data(struct object_data* data, bool locking) {
 	data->wq_is_destroyed = true;
 
 	if(locking) {
-		spin_unlock(&data->wq_destroy_lock);
+		spin_unlock_irqrestore(&data->wq_destroy_lock, flags);
 	}
 
-	//previous epochs are cleanup by deferred work (see flush_workqueue above)
-	//if *THIS* epoch is still alive then it will be cleanup by deferred work
-	//or by this thread (code follows)
 	if(data->e.path_snapdir != NULL) {
 		path_put(data->e.path_snapdir);
 		data->e.path_snapdir = NULL;
@@ -433,8 +433,8 @@ static int try_to_remove_loop_device(
 	}
 
 	if (rhashtable_remove_fast(&loops_ht, &cur_obj->linkage, loops_ht_params) == 0) {
-		loops_ht_free_fn((void*)cur_obj, NULL);
 		rcu_read_unlock();
+		loops_ht_free_fn((void*)cur_obj, NULL);
 	} else {
 		rcu_read_unlock();
 		return -ENOKEY;
@@ -457,8 +457,8 @@ static int try_to_remove_block_device(
 	}
 
 	if (rhashtable_remove_fast(&blkdevs_ht, &cur_obj->linkage, blkdevs_ht_params) == 0) {
-		blkdevs_ht_free_fn((void*)cur_obj, NULL);
 		rcu_read_unlock();
+		blkdevs_ht_free_fn((void*)cur_obj, NULL);
 	} else {
 		rcu_read_unlock();
 		return -ENOKEY;
@@ -530,7 +530,77 @@ int setup_devices(void) {
 	return 0;
 }
 
+static void teardown_blkdev_entries(struct rhashtable *ht, const struct rhashtable_params *p) {
+    struct blkdev_object *o;
+    struct rhashtable_iter iter;
+
+    while(1) {
+    	rhashtable_walk_enter(ht, &iter);
+    	rhashtable_walk_start(&iter);
+
+    	for (;;) {
+        	o = rhashtable_walk_next(&iter);
+        	if(o == NULL) {
+        		break;
+        	}
+
+        	if (IS_ERR(o)) {
+        		pr_err("%s: error while walking rhashtable for cleanup\n", module_name(THIS_MODULE));
+            	break;
+        	}
+
+        	rhashtable_remove_fast(ht, &o->linkage, *p);
+    	}
+
+    	rhashtable_walk_stop(&iter);
+    	rhashtable_walk_exit(&iter);
+
+    	if(o != NULL) {
+    		cleanup_object_data(&o->value);
+    		kfree_rcu(o, rcu);
+    	} else {
+    		return;
+    	}
+    }
+}
+
+static void teardown_loop_entries(struct rhashtable *ht, const struct rhashtable_params *p) {
+    struct loop_object *o;
+    struct rhashtable_iter iter;
+
+    while(1) {
+    	rhashtable_walk_enter(ht, &iter);
+    	rhashtable_walk_start(&iter);
+
+    	for (;;) {
+        	o = rhashtable_walk_next(&iter);
+        	if(o == NULL) {
+        		break;
+        	}
+
+        	if (IS_ERR(o)) {
+        		pr_err("%s: error while walking rhashtable for cleanup\n", module_name(THIS_MODULE));
+            	break;
+        	}
+
+        	rhashtable_remove_fast(ht, &o->linkage, *p);
+    	}
+
+    	rhashtable_walk_stop(&iter);
+    	rhashtable_walk_exit(&iter);
+
+    	if(o != NULL) {
+    		cleanup_object_data(&o->value);
+    		kfree_rcu(o, rcu);
+    	} else {
+    		return;
+    	}
+    }
+}
+
 void destroy_devices(void) {
-	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
-	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
+	teardown_blkdev_entries(&blkdevs_ht, &blkdevs_ht_params);
+	teardown_loop_entries(&loops_ht, &loops_ht_params);
+	rhashtable_destroy(&blkdevs_ht);
+	rhashtable_destroy(&loops_ht);
 }

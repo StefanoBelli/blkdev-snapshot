@@ -304,7 +304,7 @@ static bool create_snapblocks_file(struct file **out_filp, const struct path *pa
 		return false;
 	}
 
-	umode_t mode = FMODE_READ | FMODE_WRITE;
+	umode_t mode = 0600;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
 	int err = vfs_create(mnt_idmap(path_snapdir->mnt), par_ino, d_new, mode, true);
@@ -647,9 +647,9 @@ bool bdsnap_make_snapshot(
 			ret = queue_snapshot_work(data, block, blocknr, blocksize);
 		}
 		spin_unlock_irqrestore(&data->wq_destroy_lock, flags);
+		spin_unlock_irqrestore(&data->cleanup_epoch_lock, cpu_flags);
 	}
 
-	spin_unlock_irqrestore(&data->cleanup_epoch_lock, cpu_flags);
 	return ret;
 }
 
