@@ -16,6 +16,20 @@ struct epoch {
 	struct lru_ng *cached_blocks;
 };
 
+static inline void destroy_an_epoch(struct epoch* epoch) {
+	if(epoch != NULL) {
+		if(epoch->path_snapdir != NULL) {
+			path_put(epoch->path_snapdir);
+		}
+
+		if(epoch->cached_blocks != NULL) {
+			lru_ng_cleanup_and_destroy(epoch->cached_blocks);
+		}
+
+		kfree(epoch);
+	}
+}
+
 // - the wq_destroy_lock can be held by the thread which execution path falls in
 //   either the first or the second point (see above) or by the fs-implementor kprobe,
 //   where the lock is taken prior the queue_work.

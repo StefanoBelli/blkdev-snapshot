@@ -2,7 +2,6 @@
 #include <linux/kprobes.h>
 #include <linux/time.h>
 #include <linux/timekeeping.h>
-#include <linux/namei.h>
 #include <uapi/linux/mount.h>
 
 #include <mounts.h>
@@ -28,15 +27,7 @@ static void cleanup_epoch_work(struct work_struct *work) {
 	struct finish_epoch_work *few = 
 		container_of(work, struct finish_epoch_work, work);
 
-	if(few->ended_epoch->path_snapdir != NULL) {
-		path_put(few->ended_epoch->path_snapdir);
-	}
-
-	if(few->ended_epoch->cached_blocks != NULL) {
-		lru_ng_cleanup_and_destroy(few->ended_epoch->cached_blocks);
-	}
-
-	kfree(few->ended_epoch);
+	destroy_an_epoch(few->ended_epoch);
 	kfree(few);
 }
 

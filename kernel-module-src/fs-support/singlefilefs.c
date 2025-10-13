@@ -10,6 +10,12 @@
 #include <fs-support/singlefilefs.h>
 #include <pr-err-failure.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,5,0)
+#	define my_task_boottime(tsk) ((tsk)->start_boottime)
+#else
+#	define my_task_boottime(tsk) ((tsk)->real_start_time)
+#endif
+
 #define SINGLEFILEFS_MAGIC 0x42424242
 #define SINGLEFILEFS_BLOCK_SIZE 4096
 
@@ -47,27 +53,7 @@ static void xkpblocks_rcu_free_fn(struct rcu_head *rcu) {
 	free_pages_exact(n, sizeof(struct xkpblocks_node));
 }
 
-static void remove_threadentry_now(pid_t tid, u64 tstart) {
-	DEFINE_XKPBLOCKS_KEY(key, tid, tstart);
-
-	struct xkpblocks_node *cur;
-	struct hlist_node *tmp;
-
-	unsigned long flags;
-	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
-
-	hash_for_each_possible_safe(xkpblocks_ht, cur, tmp, node, keyhashit(&key)) {
-		if(cur->key.tid == key.tid && cur->key.tstart == key.tstart) {
-			hash_del_rcu(&cur->node);
-			call_rcu(&cur->rcu, xkpblocks_rcu_free_fn);
-			break;
-		}
-	}
-
-	spin_unlock_irqrestore(&xkpblocks_ht_lock, flags);
-}
-
-static struct xkpblocks_node* search_threadentry(pid_t tid, u64 tstart) {
+static inline struct xkpblocks_node* search_threadentry(pid_t tid, u64 tstart) {
 	DEFINE_XKPBLOCKS_KEY(key, tid, tstart);
 
 	struct xkpblocks_node *found = NULL;
@@ -81,6 +67,14 @@ static struct xkpblocks_node* search_threadentry(pid_t tid, u64 tstart) {
 	}
 
 	return found;
+}
+
+static inline void remove_threadentry(struct xkpblocks_node *thrent) {
+	unsigned long cpu_flags;
+	spin_lock_irqsave(&xkpblocks_ht_lock, cpu_flags);
+	hash_del_rcu(&thrent->node);
+	call_rcu(&thrent->rcu, xkpblocks_rcu_free_fn);
+	spin_unlock_irqrestore(&xkpblocks_ht_lock, cpu_flags);
 }
 
 static void cleanup_xkpblocks_ht(void) {
@@ -113,7 +107,7 @@ static bool __do_taskcheck_on(u64 key_tid, u64 key_tstart) {
 	}
 
 	get_task_struct(p);
-	u64 tstart = p->start_boottime;
+	u64 tstart = my_task_boottime(p);
 	int texited = p->exit_state;
 	
 	if(tstart != key_tstart || texited) {
@@ -185,6 +179,7 @@ static int vfs_write_entry_handler(
 	struct address_space *map;
 	struct inode *hostino;
 	struct super_block *sb;
+	struct xkpblocks_node *node;
 
 	if(
 			filp == NULL ||
@@ -193,19 +188,15 @@ static int vfs_write_entry_handler(
 			(sb = hostino->i_sb) == NULL ||
 			sb->s_magic != SINGLEFILEFS_MAGIC ||
 			sb->s_bdev == NULL ||
-			!bdsnap_test_device(sb->s_bdev)) {
+			!bdsnap_test_device(sb->s_bdev) || 
+			(node = alloc_pages_exact(sizeof(struct xkpblocks_node), GFP_ATOMIC)) == NULL) {
 
-		return 1;
-	}
-
-	struct xkpblocks_node *node = alloc_pages_exact(sizeof(struct xkpblocks_node), GFP_ATOMIC);
-	if(node == NULL) {
 		return 1;
 	}
 
 	INIT_HLIST_NODE(&node->node);
 	node->key.tid = task_pid_nr(current);
-	node->key.tstart = current->start_boottime;
+	node->key.tstart = my_task_boottime(current);
 
 	unsigned long flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, flags);
@@ -220,7 +211,7 @@ static int vfs_write_handler(
 		__always_unused struct pt_regs* regs) {
 
 	pid_t tid = task_pid_nr(current);
-	u64 tstart = current->start_boottime;
+	u64 tstart = my_task_boottime(current);
 
 	rcu_read_lock();
 
@@ -231,9 +222,8 @@ static int vfs_write_handler(
 	}
 
 	rcu_read_unlock();
+	remove_threadentry(cur);
 
-	//fix here
-	remove_threadentry_now(tid, tstart);
 	return 0;
 }
 
@@ -250,7 +240,7 @@ static int sb_bread_handler(
 		struct pt_regs* regs) {
 
 	pid_t tid = task_pid_nr(current);
-	u64 tstart = current->start_boottime;
+	u64 tstart = my_task_boottime(current);
 
 	rcu_read_lock();
 
@@ -285,7 +275,7 @@ static int write_dirty_buffer_pre_handler(
 		struct pt_regs *regs) {
 
 	pid_t tid = task_pid_nr(current);
-	u64 tstart = current->start_boottime;
+	u64 tstart = my_task_boottime(current);
 
 	rcu_read_lock();
 
@@ -298,13 +288,13 @@ static int write_dirty_buffer_pre_handler(
 	struct buffer_head *bh = (struct buffer_head*) regs->di;
 	if(bh->b_bdev == NULL) {
 		rcu_read_unlock();
-		remove_threadentry_now(tid, tstart);
+		remove_threadentry(threntry);
 		return 0;
 	}
 
 	if(bh->b_size != SINGLEFILEFS_BLOCK_SIZE) {
 		rcu_read_unlock();
-		remove_threadentry_now(tid, tstart);
+		remove_threadentry(threntry);
 		BUG();
 		return 0; //unreachable code
 	}
@@ -322,7 +312,7 @@ static int write_dirty_buffer_pre_handler(
 			saved_cpu_flags);
 
 	rcu_read_unlock();
-	remove_threadentry_now(tid, tstart);
+	remove_threadentry(threntry);
 	return 0;
 }
 

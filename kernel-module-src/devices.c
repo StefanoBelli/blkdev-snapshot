@@ -85,18 +85,7 @@ struct waddw_args  {
 static void __do_waddw(const struct waddw_args *wargs) {
 	flush_workqueue(wargs->device_wq);
 	destroy_workqueue(wargs->device_wq);
-
-	if(wargs->last_epoch != NULL) {
-		if(wargs->last_epoch->path_snapdir != NULL) {
-			path_put(wargs->last_epoch->path_snapdir);
-		}
-
-		if(wargs->last_epoch->cached_blocks != NULL) {
-			lru_ng_cleanup_and_destroy(wargs->last_epoch->cached_blocks);
-		}
-
-		kfree(wargs->last_epoch);
-	}
+	destroy_an_epoch(wargs->last_epoch);
 }
 
 struct waddw_work {
@@ -136,25 +125,34 @@ static void cleanup_object_data(struct object_data* data) {
 
 	spin_unlock_irqrestore(&data->general_lock, cpu_flags_0);
 
+	bool do_my_work = false;
+
 	struct waddw_worklist_node *wlistnode = kmalloc(sizeof(struct waddw_worklist_node), GFP_ATOMIC);
 	if(wlistnode == NULL) {
-		return;
+		goto __cleanup_object_data_finish0;
 	}
 
 	INIT_LIST_HEAD(&wlistnode->node);
 	wlistnode->wargs = kmalloc(sizeof(struct waddw_work), GFP_ATOMIC);
 
 	if(wlistnode->wargs == NULL) {
-		return;
+		kfree(wlistnode);
+		goto __cleanup_object_data_finish0;
 	}
+
+	do_my_work = true;
 
 	SET_WADDW_ARGS(wlistnode->wargs->waddw_args, data->wq, saved_last_epoch);
 	INIT_WORK(&wlistnode->wargs->work, wait_and_destroy_device_workqueue);
 	schedule_work(&wlistnode->wargs->work);
 
+__cleanup_object_data_finish0:
+
 	spin_lock_irqsave(&waddw_worklist_glock, cpu_flags_0);
 
-	list_add_tail(&wlistnode->node, &waddw_worklist);
+	if(likely(do_my_work)) {
+		list_add_tail(&wlistnode->node, &waddw_worklist);
+	}
 
 	struct waddw_worklist_node *cur;
 	struct waddw_worklist_node *tmp;
