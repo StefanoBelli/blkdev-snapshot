@@ -48,7 +48,6 @@ static __always_inline u64 keyhashit(struct xkpblocks_key *key) {
 }
 
 static void xkpblocks_rcu_free_fn(struct rcu_head *rcu) {
-	printk("freefn called NEWER VERSION :P *******************************************************************************************************************************\n");
 	struct xkpblocks_node *n = container_of(rcu, struct xkpblocks_node, rcu);
 	free_pages_exact(n, sizeof(struct xkpblocks_node));
 }
