@@ -1,13 +1,21 @@
-all:
-	make -C kernel-module-src
+all: kernel user
 
-clean: kernel-module-src-clean
+clean: kernel-src-clean user-src-clean
 
-kernel-module-src-clean:
-	make -C kernel-module-src clean
+kernel:
+	make -C src/kernel
+
+user:
+	make -C src/user
+
+kernel-src-clean:
+	make -C src/kernel clean
+
+user-src-clean:
+	make -C src/user clean
 
 module-mount:
-	make -C kernel-module-src mount
+	make -C src/kernel mount
 
 module-umount:
-	make -C kernel-module-src umount
+	make -C src/kernel umount

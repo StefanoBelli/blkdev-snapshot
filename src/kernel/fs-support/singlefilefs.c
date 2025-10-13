@@ -140,8 +140,8 @@ static void periodic_taskcheck_xkpblocks_ht(struct work_struct *work) {
 
 	spin_lock(&xkpblocks_ht_lock);
 
-    for (u32 bktnr = next_bktnr; bktnr < end; bktnr++) {
-        struct xkpblocks_node *cur;
+	for (u32 bktnr = next_bktnr; bktnr < end; bktnr++) {
+		struct xkpblocks_node *cur;
         struct hlist_node *tmp;
 
         hlist_for_each_entry_safe(cur, tmp, &xkpblocks_ht[bktnr], node) {
@@ -267,8 +267,6 @@ static int sb_bread_handler(
  */
 
 #define KP_WRITE_DIRTY_BUFFER_SYMBOL_NAME "write_dirty_buffer"
-
-int i = 0;
 
 static int write_dirty_buffer_pre_handler(
 		__always_unused struct kprobe *kp, 
