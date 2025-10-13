@@ -200,7 +200,6 @@ static int vfs_write_entry_handler(
 
 	struct xkpblocks_node *node = alloc_pages_exact(sizeof(struct xkpblocks_node), GFP_ATOMIC);
 	if(node == NULL) {
-		printk("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
 		return 1;
 	}
 
@@ -303,9 +302,14 @@ static int write_dirty_buffer_pre_handler(
 		return 0;
 	}
 
-	unsigned long saved_cpu_flags;
+	if(bh->b_size != SINGLEFILEFS_BLOCK_SIZE) {
+		rcu_read_unlock();
+		remove_threadentry_now(tid, tstart);
+		BUG();
+		return 0; //unreachable code
+	}
 
-	static int i = 0;
+	unsigned long saved_cpu_flags;
 
 	void* handle = bdsnap_search_device(
 			bh->b_bdev, &saved_cpu_flags);
@@ -313,7 +317,7 @@ static int write_dirty_buffer_pre_handler(
 	bdsnap_make_snapshot(
 			handle, 
 			threntry->block, 
-			i++, 
+			bh->b_blocknr, 
 			SINGLEFILEFS_BLOCK_SIZE, 
 			saved_cpu_flags);
 

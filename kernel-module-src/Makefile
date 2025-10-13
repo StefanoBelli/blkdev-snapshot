@@ -2,7 +2,7 @@ SHELL=/bin/bash
 modname=blkdev-snapshot
 obj-m := $(modname).o
 $(modname)-objs += main.o activation.o passwd.o devices.o mounts.o snapshot.o lru-ng.o fs-support/singlefilefs.o
-ccflags-y += -Wall -W -Wextra -Wshadow -O2 -I$(src)/include -Wno-shadow
+ccflags-y += -Wall -W -Wextra -Wshadow -I$(src)/include -Wno-shadow -O2 #careful with opt
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) modules

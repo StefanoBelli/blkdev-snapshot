@@ -1,5 +1,6 @@
 #include <linux/version.h>
 #include <linux/namei.h>
+
 #if KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
 #include <linux/mount.h>
 #endif
@@ -533,6 +534,11 @@ static bool queue_snapshot_work(
 		struct object_data *obj, const char* blk, 
 		sector_t blknr, unsigned blksize) {
 
+	if(obj->e == NULL) {
+		//should never happen, but who knows...
+		return false;
+	}
+
 	struct make_snapshot_work *msw = 
 		 kmalloc(sizeof(struct make_snapshot_work), GFP_ATOMIC);
 	if(msw == NULL) {
@@ -589,6 +595,7 @@ bool bdsnap_test_device(
 	spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
 	
 	validity = 
+		data->e != NULL && 
 		data->e->n_currently_mounted > 0 && 
 		!data->wq_is_destroyed && 
 		!spin_is_locked(&data->wq_destroy_lock);
@@ -616,13 +623,13 @@ void* bdsnap_search_device(
 
 	spin_lock_irqsave(&data->cleanup_epoch_lock, *saved_cpu_flags);
 
-	// umount with MNT_DETACH may lose data
-	if(unlikely(data->e->n_currently_mounted == 0)) {
-		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
-		return NULL;
-	}
+	bool not_valid =
+		data->e == NULL ||
+		data->e->n_currently_mounted == 0 ||
+		data->wq_is_destroyed ||
+		spin_is_locked(&data->wq_destroy_lock);
 
-	if(data->wq_is_destroyed || spin_is_locked(&data->wq_destroy_lock)) {
+	if(unlikely(not_valid)) {
 		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
 		return NULL;
 	}
@@ -640,7 +647,12 @@ bool bdsnap_make_snapshot(
 	struct object_data *data = (struct object_data*) handle;
 	bool ret = false;
 
-	if(data != NULL && !data->wq_is_destroyed && !spin_is_locked(&data->wq_destroy_lock)) {
+	bool valid = 
+		data != NULL && 
+		!data->wq_is_destroyed && 
+		!spin_is_locked(&data->wq_destroy_lock);
+
+	if(likely(valid)) {
 		unsigned long flags;
 		spin_lock_irqsave(&data->wq_destroy_lock, flags);
 		if(!data->wq_is_destroyed) {

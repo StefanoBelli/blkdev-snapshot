@@ -58,8 +58,10 @@ static void init_object_data_loop(
 //	 in this case, object_data is not visible in any way to other thrs)
 //
 // defer work: lie about wq destruction and epoch cleaning - it will be done later on
-//an umount event won't be able to queue_work for epoch cleanup
-//data->e will eventually be set to NULL and we got the general_lock
+//
+//a umount event won't be able to queue_work for epoch cleanup
+//data->e will eventually be set to NULL and we got the general_lock.
+//
 //on the contrary, if the umount event count gets the general_lock prior
 //we just wait for all the wqs to finish and nothing more is done 
 //since it already queued the last work that will cleanup the epoch 
@@ -630,13 +632,6 @@ void destroy_devices(void) {
 	rhashtable_free_and_destroy(&blkdevs_ht, blkdevs_ht_free_fn, NULL);
 	rhashtable_free_and_destroy(&loops_ht, loops_ht_free_fn, NULL);
 
-	// must do blocking flush_work on cleanup_object_data's generated work
-	// no other way. Otherwise module code execution attempt will result 
-	// in kernel oops (accompanied with a smiling page fault)
-	
-	//unsigned long cpu_flags;
-	//spin_lock_irqsave(&waddw_worklist_glock, cpu_flags);
-
 	struct waddw_worklist_node *cur;
 	struct waddw_worklist_node *tmp;
 
@@ -647,8 +642,6 @@ void destroy_devices(void) {
 		kfree(cur->wargs);
 		kfree(cur);
 	}
-
-	//spin_unlock_irqrestore(&waddw_worklist_glock, cpu_flags);
 
 	up_write(&allow_reging_operation_sem);
 }

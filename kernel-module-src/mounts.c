@@ -2,6 +2,7 @@
 #include <linux/kprobes.h>
 #include <linux/time.h>
 #include <linux/timekeeping.h>
+#include <linux/namei.h>
 #include <uapi/linux/mount.h>
 
 #include <mounts.h>
@@ -71,7 +72,7 @@ static void __epoch_event_cb_count_mount(
 				tm.tm_hour, 
 				tm.tm_min, 
 				tm.tm_sec
-		);
+				);
 	}
 }
 
@@ -106,7 +107,7 @@ static void __epoch_event_cb_count_umount(
 				few->ended_epoch = saved_epoch;
 
 				INIT_WORK(&few->work, cleanup_epoch_work);
-				
+
 				unsigned long flags; //cpu-saved flags
 				spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
 				queue_work(data->wq, &few->work);
@@ -169,19 +170,29 @@ static inline struct block_device *get_bdev_from_path(const struct path *path) {
 
 #define KRP_NEW_MOUNT_SYMBOL_NAME "do_move_mount"
 
+static inline bool is_root(const struct path *path) {
+	char* buf = kmalloc(PATH_MAX, GFP_ATOMIC);
+	if (buf == NULL) {
+		return false;
+	}
+
+	char* p = d_path(path, buf, PATH_MAX);
+	bool ok = !IS_ERR(p) && p[0] == '/' && p[1] == '\0';
+
+	kfree(buf);
+	return ok;
+}
+
 static int new_mount_entry_handler(struct kretprobe_instance* krp_inst, struct pt_regs* regs) {
 	struct path *old_path = (struct path *) regs->di;
-	struct block_device *bdev = get_bdev_from_path(old_path);
 
-	if(bdev == NULL) {
+	if(old_path == 	NULL) {
 		return 1;
 	}
 
-	char __tmp_oldp[33];
-	memset(__tmp_oldp, 0, 33);
-	char* oldpath_str = d_path(old_path, __tmp_oldp, 32);
+	struct block_device *bdev = get_bdev_from_path(old_path);
 
-	if(strcmp(oldpath_str, "/") != 0) {
+	if(bdev == NULL || !is_root(old_path)) {
 		return 1;
 	}
 
@@ -220,7 +231,7 @@ static int old_mount_entry_handler(struct kretprobe_instance* krp_inst, struct p
 		!(flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE)) &&
 		!(flags & MS_MOVE);
 
-	if(!is_new_mount) {
+	if(!is_new_mount || path == NULL) {
 		return 1;
 	}
 
@@ -244,8 +255,26 @@ static int old_mount_entry_handler(struct kretprobe_instance* krp_inst, struct p
 
 #define KRP_UMOUNT_SYMBOL_NAME "path_umount"
 
+static inline bool path_starts_with(const char* s, const struct path *path) {
+	char* buf = kmalloc(PATH_MAX, GFP_ATOMIC);
+	if (buf == NULL) {
+		return false;
+	}
+
+	char* p = d_path(path, buf, PATH_MAX);
+	size_t n = strlen(s);
+	bool ok = strncmp(p, s, n) == 0 && (p[n] == '/' || p[n] == '\0');
+
+	kfree(buf);
+	return ok;
+}
+
 static int umount_entry_handler(struct kretprobe_instance* krp_inst, struct pt_regs* regs) {
 	struct path *path = (struct path*) regs->di;
+
+	if(path == NULL || path_starts_with("/run/systemd", path)) {
+		return 1;
+	}
 
 	struct block_device *bdev = get_bdev_from_path(path);
 	if(bdev == NULL) {
