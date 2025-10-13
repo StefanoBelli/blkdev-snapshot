@@ -72,8 +72,9 @@ static inline void remove_threadentry(struct xkpblocks_node *thrent) {
 	unsigned long cpu_flags;
 	spin_lock_irqsave(&xkpblocks_ht_lock, cpu_flags);
 	hash_del_rcu(&thrent->node);
-	call_rcu(&thrent->rcu, xkpblocks_rcu_free_fn);
 	spin_unlock_irqrestore(&xkpblocks_ht_lock, cpu_flags);
+
+	call_rcu(&thrent->rcu, xkpblocks_rcu_free_fn);
 }
 
 static void cleanup_xkpblocks_ht(void) {
