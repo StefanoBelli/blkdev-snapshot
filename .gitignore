@@ -1,8 +1,12 @@
 .vscode/
 .ycm_extra_conf.py
+.ycm_extra_conf.py.old
 lkmdev-editor-setup-kit/
 
 bin/
+
+blkdev-activation
+blkdev-restore
 
 *.o.d
 *.cmd
