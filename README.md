@@ -269,4 +269,76 @@ Code related to this part is in ```src/kernel/mounts.c```.
 
 ### Snapshot
 
-The snapshot is concretely made from a FS-independent part. Symbols are exported for any other part of the kernel to use.
+The snapshot is concretely made from a FS-independent part. 
+
+Key functions for the FS-specific part implementors to use are exported, those are:
+ * The ```bdsnap_test_device``` function will be used to determine if the device needs the snapshot, it is very "light" to execute and executed on early stages.
+   The function can return "true" as in "ok, device needs snapshot since it is registered and has a valid epoch ongoing" or "false" otherwise.
+   Anything can change between its invocation and the next: ```bdsnap_search_device```
+ * The ```bdsnap_search_device``` is the same as ```bdsnap_search_device``` but hold a lock (cleanup_epoch_lock) that must be released from ```bdsnap_make_snapshot```.
+   It returns an handle (opaque ```struct object_data``` ptr) that will be used by the ```bdsnap_make_snapshot``` or NULL if device does not need a snapshot.
+ * The ```bdsnap_make_snapshot``` takes the handle and block infos (blk num, blk siz, blk data). Allocates in atomic-context the struct that carries both args
+   and ```struct work_struct``` for snapshot deferred work, initializes it with all those block infos, current epoch (remember ```cleanup_epoch_lock``` is taken, nothing can happen),
+   and ```queue_work```. Also, prior to ```queue_work```, it takes a ```wq_destroy_lock``` to ensure that the user won't ```deactivate_snapshot``` (and so destroy the device-wide ordered wq)
+   and gurantee correct ordering of all operations.
+
+ What the deferred snapshot work does it rather simple: in fact it checks if the current epochs's path to snapdir and LRU of cached blocks are valid (if not then initialize them by doing
+ some work on paths/dentries/inodes/... for the path and a simple LRU init for the cached blocks), then looks in the LRU for the block: if not found then it needs to open
+ snapblocks file (in /snapshot/image-.../) and look linearly into it for the block. If this last search fails then nothing to do, we need to write the block into the file. 
+ Anyway if not found in LRU, it will be added into it and the block will become the MRU. The LRU is needed to cache the already written fs blocks.
+
+ As already said, LRU and cached blocks are initialized once for each epoch in "lazy mode" by the first snapshot deferred worker that executes for that epoch of that device (ordered wq per-device)
+ and are valid and "handed over" until a "matching" epoch cleanup work is put on this wq, a deactivation request comes from the user or module is being unloaded (see above, devices section)
+ 
+ The LRU has fixed size to avoid the risk of having a lot of memory pressure. 
+ It is implemented by pairing a Linux kernel-provided ```struct list_lru``` and hashtable (the static one, and **not** rhashtable).
+ This allows very fast lookup with LRU eviction of already written blocks.
+ Lookup obviously gurantees that the searched block will become MRU.
+ The hashtable is very large and for a FS with blocks of 4K, it should cover 1GB of storage for some MBs (see from line 47 of ```src/kernel/lru-ng.c```), for each registered device.
+ Size limit is enforced via a callback passed to ```list_lru_walk```. 
+ ```vmalloc``` is used to allocate LRU, not a problem since it is done by deferred work in process context.
+ 
+ Code related to this part is in ```src/kernel/snapshot.c```, ```src/kernel/lru-ng.c```, ```src/kernel/include/lru-ng.h```, ```src/kernel/include/bdsnap/bdsnap.h```
+ 
+### Singlefilefs-specific part
+
+This part is FS-specific and is made of ```kprobes``` that will catch various parts of the write.
+
+Note that since all of the probed funcs are run in process context, we can consult "```current```".
+
+ * The ```kretprobe``` registered on ```vfs_write``` will alloc and init data for the thread,
+   identified by a TID (not namespace-specific) and its ```start_boottime```,
+   take the unique lock for the static hashtable used to pass data across kprobes
+   using thread ident as key and do the ```hash_add_rcu```. This is done if various checks
+   on the device are passing, otherwise immediately return (e.g. not a singlefilefs or
+   not a registered device for snapshot service).
+
+ * The ```sb_bread``` ```kretprobe``` searches the hashtable for thread ident and do a ```memcpy``` of the block
+   being read. No locks are taken and O(1) lookup thanks to the hashtable. Only a RCU protected section.
+   Note that probe is put on ```__bread_gfp```, since ```sb_bread``` is potentially inlined by the compiler.
+   Only the "handler" is used and not the "entry_handler", since I need the returned ```struct buffer_head*```.
+
+ * ```write_dirty_buffer``` is probed via a ```kprobe``` and it is just used to determine if the block will be written
+   In fact, it does the hashtable lookup for the current thread and does the
+   ```bdsnap_search_device``` and ```bdsnap_make_snapshot``` with block infos.
+
+ * Since in a single thread execution flow, a singlefilefs write can write multiple blocks
+   (e.g. data one and inode one), the only one handler that can remove a thread entry from the hashtable is
+   the ```vfs_write``` handler (the "exit" one) - we are sure that for the thread, write is over.
+   Probes can be hit multiple times from one thread.
+
+Note on the hashtable: it is a classic static hashtable, large enough to host all of the threads idents 
+by their PIDs such that lookup is approx O(1), num of bits is 18, so 2^18 buckets, 
+memory usage is very acceptable (some MBs) also considering since it is the only instance system-wide, 
+gurantees fast lookup, and today the num of possible PIDs is set to 2^22 (e.g. by systemd).
+
+Why the ident via tid and start_boottime? What happens if a thread is killed in the midst of a write? 
+Its data would stay in the hashtable but the kernel may reassign that TID to a new thread. 
+Tid and ```start_boottime``` are mixed via xxh64 fast hash algo.
+
+Even if it is very improbable, there is a periodic delayed work on system wq that checks for these cases 
+where hashtable nodes are "orphan" in the sense that their thread died and they never got removed, if this is
+the case, then it removes the node from the ht.
+
+Since a lock is needed, this is done each 50 bucket every hour to limit the lock holding time and 
+minimize impact on probes.
