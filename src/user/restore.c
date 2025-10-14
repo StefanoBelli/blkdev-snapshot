@@ -75,7 +75,7 @@ static void __do_restore_rawblocks(int snaps_fd, int device_fd, const struct sna
 	}
 
 	ssize_t rerr = read(snaps_fd, buf, nbytes);
-	//check read nbtyes
+
 	if(rerr < 0) {
 		perror("read");
 		lseek(snaps_fd, mhdr->payldsiz, SEEK_CUR);
@@ -83,14 +83,24 @@ static void __do_restore_rawblocks(int snaps_fd, int device_fd, const struct sna
 		return;
 	}
 
+	if(rerr != (ssize_t) nbytes) {
+		printf("unexpected reading error: could not read %ld bytes\n", nbytes);
+		exit(EXIT_FAILURE);
+	}
+
 	lseek(device_fd, mhdr->blknr * nbytes, SEEK_SET);
 
 	ssize_t werr = write(device_fd, buf, nbytes);
-	//check write nbytes
+
 	if(werr < 0) {
 		perror("write");
 	}
-	
+
+	if(werr != (ssize_t) nbytes) {
+		printf("unexpected writing error: could not write %ld bytes\n", nbytes);
+		exit(EXIT_FAILURE);
+	}
+
 	free(buf);
 }
 
@@ -130,6 +140,11 @@ static void do_restore() {
 			break;
 		}
 
+		if(!restore_all && restore_only_blknum != hdrbuf.blknr) {
+			seek_nexthdr(snaps_fd, hdrbuf); 
+			continue;
+		}
+
 		puts("+--------snapblock header-----------+");
 		printf(" * block number: %ld\n", hdrbuf.blknr);
 		printf(" * payload size: %ld\n", hdrbuf.payldsiz);
@@ -137,17 +152,13 @@ static void do_restore() {
 		printf(" * payload offset at: %ld\n", hdrbuf.payld_off);
 		puts("+-----------------------------------+");
 
-		if(!restore_all && restore_only_blknum != hdrbuf.blknr) {
-			puts("");
-			seek_nexthdr(snaps_fd, hdrbuf); 
-			continue;
-		}
-
 		if(ask) {
 			printf(" >>> would you like to restore this snapblock [yes/no]? ");
+
 			char ans[10];
 			memset(ans, 0, 10);
 			fgets(ans, 10, stdin);
+
 			if(strcmp(ans, "yes\n")) {
 				puts(" --- skipping\n");
 				seek_nexthdr(snaps_fd, hdrbuf);
