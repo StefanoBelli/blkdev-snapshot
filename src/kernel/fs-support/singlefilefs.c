@@ -286,7 +286,6 @@ static int write_dirty_buffer_pre_handler(
 	struct buffer_head *bh = (struct buffer_head*) regs->di;
 	if(bh->b_bdev == NULL) {
 		rcu_read_unlock();
-		remove_threadentry(threntry);
 		return 0;
 	}
 
@@ -310,7 +309,6 @@ static int write_dirty_buffer_pre_handler(
 			saved_cpu_flags);
 
 	rcu_read_unlock();
-	remove_threadentry(threntry);
 	return 0;
 }
 
