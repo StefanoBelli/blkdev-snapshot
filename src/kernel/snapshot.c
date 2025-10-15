@@ -25,7 +25,7 @@
 #elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,16,0)
 
 #	define new_dentry(_name, _base, ...) \
-		(lookup_one_len(_name, _base, _strlen(_name)))
+		(lookup_one_len(_name, _base, strlen(_name)))
 
 #else
 
@@ -57,19 +57,25 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
 
 	umode_t dirmode = 0700;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 	d_new = vfs_mkdir(mnt_idmap(mnt), ino, d_new, dirmode);
+#elif KERNEL_VERSION(6,3,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,15,0)
+	int err = vfs_mkdir(mnt_idmap(mnt), ino, d_new, dirmode);
 #elif KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
-	d_new = vfs_mkdir(mnt_user_ns(mnt), ino, d_new, dirmode);
+	int err = vfs_mkdir(mnt_user_ns(mnt), ino, d_new, dirmode);
 #elif KERNEL_VERSION(3,15,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
-	d_new = vfs_mkdir(ino, d_new, dirmode);
+	int err = vfs_mkdir(ino, d_new, dirmode);
 #else
 #	error too old of a system... (vfs_mkdir is non-exported)
 #endif
 
 	inode_unlock(ino);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 	if(IS_ERR(d_new)) {
+#else
+	if(err != 0) {
+#endif
 		pr_err_failure_with_code("vfs_mkdir", PTR_ERR(d_new));
 	}
 
