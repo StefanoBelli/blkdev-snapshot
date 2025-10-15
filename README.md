@@ -187,7 +187,7 @@ Anyway, for both user tools help is available via the *-h* option.
 Project comes with an automated """test suite""" (not unit tests like in kunit but whole system test)
 which is located under the ```demo/``` folder from the project source tree.
 
-You may run the tests after the project build and ensuring SINGLEFILEFS kernel module and its user utils, under demo folder, are correcly compiled:
+You may run the tests after the project build and ensuring SINGLEFILE-FS kernel module and its user utils, under demo folder, are correcly compiled for the running kernel:
 
 ~~~
 $ cd demo/
@@ -201,6 +201,20 @@ $ ./test/write-single-first-block.sh
 ~~~
 
 if u+x is not enabled on shellscript files, just enable it with ```chmod``` or use ```bash <test script name>``` directly
+
+### Compatibility notes
+
+I got the script "```demo/runalltests.sh```" to be correctly executed using kernel versions 6.8.x, 6.11.x, 6.12.x, 6.16.x. 
+
+Most likely, it also works for Linux versions in between of them.
+
+Module was developed and deeply tested on Linux 6.16.x.
+
+It should work also for Linux 6.6.x and 6.7.x.
+
+Pay attention to your distribution's setup: on Ubuntu, MAC LSM (AppArmor) will prevent the creation of "/snapshot" directory, probably some default MAC rules, namespace issues, etc...
+
+I **suppose** it is AppArmor fault because on other distros (Fedora, Arch and Gentoo), with same kernel versions (or, at least, same series), everything works.
 
 ## Module overview
 
@@ -392,6 +406,7 @@ Since a lock is needed, this is done each 50 bucket every hour to limit the lock
 minimize impact on probes.
 
 Code related to this part is in ```src/kernel/fs-support/singlefilefs.c```.
+
 
 
 
