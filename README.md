@@ -187,7 +187,7 @@ Anyway, for both user tools help is available via the *-h* option.
 Project comes with an automated """test suite""" (not unit tests like in kunit but whole system test)
 which is located under the ```demo/``` folder from the project source tree.
 
-You may run the tests after the project build:
+You may run the tests after the project build and ensuring SINGLEFILEFS kernel module and its user utils, under demo folder, are correcly compiled:
 
 ~~~
 $ cd demo/
@@ -392,6 +392,7 @@ Since a lock is needed, this is done each 50 bucket every hour to limit the lock
 minimize impact on probes.
 
 Code related to this part is in ```src/kernel/fs-support/singlefilefs.c```.
+
 
 
 
