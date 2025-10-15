@@ -16,3 +16,6 @@ blkdev-restore
 *.mod
 Module.symvers
 modules.order
+
+demo.img
+mnt/
