@@ -73,11 +73,13 @@ static inline struct dentry* mkdir_via_name_by_dent(const char* dir_name, struct
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 	if(IS_ERR(d_new)) {
-#else
-	if(err != 0) {
-#endif
 		pr_err_failure_with_code("vfs_mkdir", PTR_ERR(d_new));
 	}
+#else
+	if(err != 0) {
+		pr_err_failure_with_code("vfs_mkdir", err);
+	}
+#endif
 
 	return d_new;
 }
