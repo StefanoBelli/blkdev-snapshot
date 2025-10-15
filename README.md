@@ -97,7 +97,7 @@ or
 You will need to check for dmesg for the assigned major number and do mknod:
 
 ~~~
-# mknod 240 1 c bdactchrdev
+# mknod  bdactchrdev c 240 1
 ~~~
 
 Then you can use the blkdev-activation tool
@@ -275,7 +275,7 @@ Key functions for the FS-specific part implementors to use are exported, those a
  * The ```bdsnap_test_device``` function will be used to determine if the device needs the snapshot, it is very "light" to execute and executed on early stages.
    The function can return "true" as in "ok, device needs snapshot since it is registered and has a valid epoch ongoing" or "false" otherwise.
    Anything can change between its invocation and the next: ```bdsnap_search_device```
- * The ```bdsnap_search_device``` is the same as ```bdsnap_search_device``` but hold a lock (cleanup_epoch_lock) that must be released from ```bdsnap_make_snapshot```.
+ * The ```bdsnap_search_device``` is the same as ```bdsnap_test_device``` but holds a lock (```cleanup_epoch_lock``` that impedes an epoch cleanup) that must be released from ```bdsnap_make_snapshot```.
    It returns an handle (opaque ```struct object_data``` ptr) that will be used by the ```bdsnap_make_snapshot``` or NULL if device does not need a snapshot.
  * The ```bdsnap_make_snapshot``` takes the handle and block infos (blk num, blk siz, blk data). Allocates in atomic-context the struct that carries both args
    and ```struct work_struct``` for snapshot deferred work, initializes it with all those block infos, current epoch (remember ```cleanup_epoch_lock``` is taken, nothing can happen),
@@ -304,7 +304,7 @@ Key functions for the FS-specific part implementors to use are exported, those a
 
  #### snapblocks format
 
- The "snapblocks" file is a set of pair (header,payload). 
+ The "snapblocks" file is a set of pair (header,payload) "snapshotted blocks" all in one single file within /snapshot/<bdev>-<timestamp>/ directory.
  
  The header is 40B long and it is mandatory, but that allows a second extended header.
 
@@ -372,4 +372,5 @@ Since a lock is needed, this is done each 50 bucket every hour to limit the lock
 minimize impact on probes.
 
 Code related to this part is in ```src/kernel/fs-support/singlefilefs.c```.
+
 
