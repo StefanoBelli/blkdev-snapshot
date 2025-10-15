@@ -269,7 +269,7 @@ Code related to this part is in ```src/kernel/mounts.c```.
 
 ### Snapshot
 
-The snapshot is concretely made from a FS-independent part. 
+The snapshot is concretely made from a FS-independent part (extensibility reasons).
 
 Key functions for the FS-specific part implementors to use are exported, those are:
  * The ```bdsnap_test_device``` function will be used to determine if the device needs the snapshot, it is very "light" to execute and executed on early stages.
@@ -297,9 +297,36 @@ Key functions for the FS-specific part implementors to use are exported, those a
  The hashtable is very large and for a FS with blocks of 4K, it should cover 1GB of storage for some MBs (see from line 47 of ```src/kernel/lru-ng.c```), for each registered device.
  Size limit is enforced via a callback passed to ```list_lru_walk```. 
  ```vmalloc``` is used to allocate LRU, not a problem since it is done by deferred work in process context.
+
+ Why wqs are ordered? No concurrency management (no locks or lockfree algorithms) within snapshot deferred work itself, and no more arbitration needed: suppose two threads write on the same block, 
+ one thread writes the original block (prior the mount operation) and another writes after this last thread wrote (so the block is dirty). Without wq ordering property gurantees, works are queued
+ and one may get after the other and so the original block may be lost.
+
+ #### snapblocks format
+
+ The "snapblocks" file is a set of pair (header,payload). 
  
- Code related to this part is in ```src/kernel/snapshot.c```, ```src/kernel/lru-ng.c```, ```src/kernel/include/lru-ng.h```, ```src/kernel/include/bdsnap/bdsnap.h```
+ The header is 40B long and it is mandatory, but that allows a second extended header.
+
+ The mandatory header contains:
+  * 64 bits magic number
+  * 64 bits block number
+  * 64 bits payload size
+  * 64 bits payload type
+  * 64 bits payload offset relative to the start of mandatory hdr.
+
+Payload type and offset fields allow to implement the extended header which provides 
+a way to implement a simple checksum of the block (md5 or sha1 for example) or encrypt-then-mac, HMAC, digital signature, etc etc... on the block. 
+
+The blkdev restorer tool will need to do the "inverse" operations according to the specific payload type (e.g. to decrypt, ...). 
+
+In this case only the "raw" payload type is implemented (type=0, off=0x28), which is just a fs block of 4k bytes, no extended header is needed.
+
+The extended header is placed between the mandatory header and the payload, hence the payload offset field necessity since it can be arbitrarily long 
+(e.g. different asymm algo used for digital signature, e.g. ECDSA or RSA).
  
+ Code related to this part is in ```src/kernel/snapshot.c```, ```src/kernel/lru-ng.c```, ```src/kernel/include/lru-ng.h```, ```src/kernel/include/bdsnap/bdsnap.h```.
+
 ### Singlefilefs-specific part
 
 This part is FS-specific and is made of ```kprobes``` that will catch various parts of the write.
@@ -308,17 +335,18 @@ Note that since all of the probed funcs are run in process context, we can consu
 
  * The ```kretprobe``` registered on ```vfs_write``` will alloc and init data for the thread,
    identified by a TID (not namespace-specific) and its ```start_boottime```,
-   take the unique lock for the static hashtable used to pass data across kprobes
+   take the unique lock for the static hashtable used to pass data across different kprobes cb
    using thread ident as key and do the ```hash_add_rcu```. This is done if various checks
    on the device are passing, otherwise immediately return (e.g. not a singlefilefs or
    not a registered device for snapshot service).
 
- * The ```sb_bread``` ```kretprobe``` searches the hashtable for thread ident and do a ```memcpy``` of the block
+ * The ```sb_bread``` ```kretprobe``` searches the hashtable for current thread ident and do a ```memcpy``` of the block
    being read. No locks are taken and O(1) lookup thanks to the hashtable. Only a RCU protected section.
    Note that probe is put on ```__bread_gfp```, since ```sb_bread``` is potentially inlined by the compiler.
    Only the "handler" is used and not the "entry_handler", since I need the returned ```struct buffer_head*```.
 
  * ```write_dirty_buffer``` is probed via a ```kprobe``` and it is just used to determine if the block will be written
+   (the hashtable is looked up as above).
    In fact, it does the hashtable lookup for the current thread and does the
    ```bdsnap_search_device``` and ```bdsnap_make_snapshot``` with block infos.
 
@@ -342,3 +370,6 @@ the case, then it removes the node from the ht.
 
 Since a lock is needed, this is done each 50 bucket every hour to limit the lock holding time and 
 minimize impact on probes.
+
+Code related to this part is in ```src/kernel/fs-support/singlefilefs.c```.
+
