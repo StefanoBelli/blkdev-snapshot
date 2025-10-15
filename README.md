@@ -182,6 +182,26 @@ Options can be mixed.
 
 Anyway, for both user tools help is available via the *-h* option.
 
+### Running tests
+
+Project comes with an automated """test suite""" (not unit tests like in kunit but whole system test)
+which is located under the ```demo/``` folder from the project source tree.
+
+You may run the tests after the project build:
+
+~~~
+$ cd demo/
+$ ./runalltests.sh
+~~~
+
+or, to execute them singularly:
+
+~~~
+$ ./test/write-single-first-block.sh
+~~~
+
+if u+x is not enabled on shellscript files, just enable it with ```chmod``` or use ```bash <test script name>``` directly
+
 ## Module overview
 
 ### Activating, deactivating and password in-kernel-memory store
@@ -372,5 +392,6 @@ Since a lock is needed, this is done each 50 bucket every hour to limit the lock
 minimize impact on probes.
 
 Code related to this part is in ```src/kernel/fs-support/singlefilefs.c```.
+
 
 
