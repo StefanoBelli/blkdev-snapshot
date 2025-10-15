@@ -1,5 +1,6 @@
 #include <linux/version.h>
 #include <linux/namei.h>
+#include <linux/file.h>
 
 #if KERNEL_VERSION(5,12,0) <= LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
 #include <linux/mount.h>
