@@ -584,43 +584,8 @@ static bool queue_snapshot_work(
  *
  */
 
-bool bdsnap_test_device(
-		const struct block_device* bdev) {
-
-	struct mountinfo minfo;
-	from_block_device_to_mountinfo(&minfo, bdev);
-
-	rcu_read_lock();
-
-	struct object_data *data = get_device_data_always(&minfo);
-	if(data == NULL) {
-		rcu_read_unlock();
-		return false;
-	}
-
-	bool validity = false;
-
-	unsigned long flags;
-	spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
-	
-	validity = 
-		data->e != NULL && 
-		data->e->n_currently_mounted > 0 && 
-		!data->wq_is_destroyed && 
-		!spin_is_locked(&data->wq_destroy_lock);
-
-	rcu_read_unlock();
-
-	spin_unlock_irqrestore(&data->cleanup_epoch_lock, flags);
-
-	return validity;
-}
-
-EXPORT_SYMBOL_GPL(bdsnap_test_device);
-
 void* bdsnap_search_device(
-		const struct block_device* bdev, 
-		unsigned long *saved_cpu_flags) {
+		const struct block_device* bdev) {
 
 	struct mountinfo minfo;
 	from_block_device_to_mountinfo(&minfo, bdev);
@@ -630,16 +595,11 @@ void* bdsnap_search_device(
 		return NULL;
 	}
 
-	spin_lock_irqsave(&data->cleanup_epoch_lock, *saved_cpu_flags);
-
 	bool not_valid =
 		data->e == NULL ||
-		data->e->n_currently_mounted == 0 ||
-		data->wq_is_destroyed ||
-		spin_is_locked(&data->wq_destroy_lock);
+		data->wq_is_destroyed;
 
 	if(unlikely(not_valid)) {
-		spin_unlock_irqrestore(&data->cleanup_epoch_lock, *saved_cpu_flags);
 		return NULL;
 	}
 
@@ -650,25 +610,23 @@ EXPORT_SYMBOL_GPL(bdsnap_search_device);
 
 bool bdsnap_make_snapshot(
 		void* handle, const char* block, 
-		sector_t blocknr, u64 blocksize, 
-		unsigned long cpu_flags) {
+		sector_t blocknr, u64 blocksize) {
 
 	struct object_data *data = (struct object_data*) handle;
 	bool ret = false;
 
 	bool valid = 
 		data != NULL && 
-		!data->wq_is_destroyed && 
-		!spin_is_locked(&data->wq_destroy_lock);
+		data->e != NULL &&
+		!data->wq_is_destroyed;
 
 	if(likely(valid)) {
 		unsigned long flags;
-		spin_lock_irqsave(&data->wq_destroy_lock, flags);
+		read_lock_irqsave(&data->wq_destroy_lock, flags);
 		if(!data->wq_is_destroyed) {
 			ret = queue_snapshot_work(data, block, blocknr, blocksize);
 		}
-		spin_unlock_irqrestore(&data->wq_destroy_lock, flags);
-		spin_unlock_irqrestore(&data->cleanup_epoch_lock, cpu_flags);
+		read_unlock_irqrestore(&data->wq_destroy_lock, flags);
 	}
 
 	return ret;

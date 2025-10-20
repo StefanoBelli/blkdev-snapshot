@@ -1,9 +1,11 @@
 #!/bin/bash
 
+USERBIN=$PWD/../src/user/
 SFFSBIN=$PWD/SINGLEFILE-FS
 DEMOIMG=demo.img
 MNTPOINT=mnt
 PRIOR_MD5SUM=""
+MODULE_PASSWD=ciao
 
 do_mount() {
 	sudo mount -o loop -t singlefilefs $DEMOIMG $MNTPOINT
@@ -26,7 +28,7 @@ prepare_demo() {
 	echo "num of blocks for test file: $numblks"
 
 	cd ..
-	sudo make PASSWD=ciao module-mount 2>/dev/null >>/dev/null
+	sudo make PASSWD=$MODULE_PASSWD module-mount 2>/dev/null >>/dev/null
 	cd demo
 
 	cd $SFFSBIN
@@ -47,23 +49,22 @@ prepare_demo() {
 
 	do_mount
 
-	the_file_write $(python3 -c "print(\"a\" * $numblks * 4096)") 0
+	if [ $numblks -ne 0 ]; then
+		the_file_write $(python3 -c "print(\"a\" * $numblks * 4096)") 0
+	fi
 
 	do_umount
 
 	PRIOR_MD5SUM=$(md5sum $DEMOIMG | awk '{ print $1 }')
 }
 
-USERBIN=$PWD/../src/user/
-PASSWD=ciao
-
 activate_device() {
-	sudo $USERBIN/blkdev-activation -a -f $DEMOIMG -p $PASSWD
+	sudo $USERBIN/blkdev-activation -a -f $DEMOIMG -p $MODULE_PASSWD
 	sudo rm -rv /snapshot
 }
 
 deactivate_device() {
-	sudo $USERBIN/blkdev-activation -d -f $DEMOIMG -p $PASSWD
+	sudo $USERBIN/blkdev-activation -d -f $DEMOIMG -p $MODULE_PASSWD
 }
 
 check_results() {
@@ -80,6 +81,7 @@ check_results() {
 		echo "--- RESTORE FAILED ---"
 		rv=1
 	fi
+
 	echo ""
 	echo pre-mountop hash: $PRIOR_MD5SUM
 	echo after-writes hash: $INTERM_MD5SUM

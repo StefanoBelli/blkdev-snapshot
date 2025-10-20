@@ -20,8 +20,7 @@ static void __init_object_data(
 		const void *wqarg) {
 
 	spin_lock_init(&data->general_lock);
-	spin_lock_init(&data->wq_destroy_lock);
-	spin_lock_init(&data->cleanup_epoch_lock);
+	rwlock_init(&data->wq_destroy_lock);
 
 	data->e = NULL;
 
@@ -112,11 +111,11 @@ static void cleanup_object_data(struct object_data* data) {
 	spin_lock_irqsave(&data->general_lock, cpu_flags_0);
 
 	unsigned long cpu_flags_1;
-	spin_lock_irqsave(&data->wq_destroy_lock, cpu_flags_1);
+	write_lock_irqsave(&data->wq_destroy_lock, cpu_flags_1);
 
 	data->wq_is_destroyed = true;
 
-	spin_unlock_irqrestore(&data->wq_destroy_lock, cpu_flags_1);
+	write_unlock_irqrestore(&data->wq_destroy_lock, cpu_flags_1);
 
 	struct epoch *saved_last_epoch = data->e;
 	if(data->e != NULL) {

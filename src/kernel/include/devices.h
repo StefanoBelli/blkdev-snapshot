@@ -33,17 +33,11 @@ static inline void destroy_an_epoch(struct epoch* epoch) {
 // - the wq_destroy_lock can be held by the thread which execution path falls in
 //   either the first or the second point (see above) or by the fs-implementor kprobe,
 //   where the lock is taken prior the queue_work.
-//
-// - the cleanup_epoch_lock will be held by the fs-implementor using the exported funcs
-//   (see include <bdsnap/bdsnap.h>) and by __epoch_event_cb_count_umount in a fine-grain way
-//   (around queue_work), this should solve issues involving umount and its flags (in particular
-//   MNT_DETACH)
 struct object_data {
-	bool wq_is_destroyed;
-	spinlock_t general_lock;
-	spinlock_t wq_destroy_lock;
-	spinlock_t cleanup_epoch_lock;
-	struct workqueue_struct *wq;
+	bool wq_is_destroyed ____cacheline_aligned;
+	spinlock_t general_lock ____cacheline_aligned;
+	rwlock_t wq_destroy_lock ____cacheline_aligned;
+	struct workqueue_struct *wq ____cacheline_aligned;
 	struct epoch *e;
 	char original_dev_name[PATH_MAX];
 };

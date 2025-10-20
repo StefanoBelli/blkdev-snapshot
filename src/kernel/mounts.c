@@ -99,10 +99,7 @@ static void __epoch_event_cb_count_umount(
 
 				INIT_WORK(&few->work, cleanup_epoch_work);
 
-				unsigned long flags; //cpu-saved flags
-				spin_lock_irqsave(&data->cleanup_epoch_lock, flags);
 				queue_work(data->wq, &few->work);
-				spin_unlock_irqrestore(&data->cleanup_epoch_lock, flags);
 			}
 		}
 	}

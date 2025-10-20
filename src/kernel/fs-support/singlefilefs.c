@@ -296,17 +296,14 @@ static int write_dirty_buffer_pre_handler(
 		return 0; //unreachable code
 	}
 
-	unsigned long saved_cpu_flags;
-
 	void* handle = bdsnap_search_device(
-			bh->b_bdev, &saved_cpu_flags);
+			bh->b_bdev);
 
 	bdsnap_make_snapshot(
 			handle, 
 			threntry->block, 
 			bh->b_blocknr, 
-			SINGLEFILEFS_BLOCK_SIZE, 
-			saved_cpu_flags);
+			SINGLEFILEFS_BLOCK_SIZE);
 
 	rcu_read_unlock();
 	return 0;
